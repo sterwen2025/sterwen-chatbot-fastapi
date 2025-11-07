@@ -25,9 +25,9 @@ jobs:
       - name: Log in to Azure Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ${{ secrets.REGISTRY_LOGIN_SERVER }}
-          username: ${{ secrets.REGISTRY_USERNAME }}
-          password: ${{ secrets.REGISTRY_PASSWORD }}
+          registry: sterwenregistry.azurecr.io
+          username: ${{ secrets.AZUREAPPSERVICE_CONTAINERUSERNAME_C319B97C5E3446D89584105E91B4EA5E }}
+          password: ${{ secrets.AZUREAPPSERVICE_CONTAINERPASSWORD_60E4F97E71A44FEB9C339F019AFA8F95 }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -35,7 +35,7 @@ jobs:
           context: .
           file: ./Dockerfile.prod
           push: true
-          tags: ${{ secrets.REGISTRY_LOGIN_SERVER }}/sterwen-chatbot:${{ github.sha }},${{ secrets.REGISTRY_LOGIN_SERVER }}/sterwen-chatbot:latest
+          tags: sterwenregistry.azurecr.io/sterwen-chatbot:${{ github.sha }},sterwenregistry.azurecr.io/sterwen-chatbot:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -50,4 +50,4 @@ jobs:
         uses: azure/webapps-deploy@v3
         with:
           app-name: 'sterwen-chatbot'
-          images: '${{ secrets.REGISTRY_LOGIN_SERVER }}/sterwen-chatbot:${{ github.sha }}'
+          images: 'sterwenregistry.azurecr.io/sterwen-chatbot:${{ github.sha }}'
