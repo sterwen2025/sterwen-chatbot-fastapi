@@ -1,0 +1,53 @@
+# GitHub Actions workflow for Chatbot deployment to Azure
+# This file should be placed in the sterwen-meetingnotes-chatbot-fastapi repository
+
+name: Build and deploy Chatbot to Azure Web App
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Azure Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.REGISTRY_LOGIN_SERVER }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.prod
+          push: true
+          tags: ${{ secrets.REGISTRY_LOGIN_SERVER }}/sterwen-chatbot:${{ github.sha }},${{ secrets.REGISTRY_LOGIN_SERVER }}/sterwen-chatbot:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_BB5D4DFBD817457ABC9A1C6886DFB67E }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_1E4F702D7381441D9D4AB959816A68D3 }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_445C8569EF8647148769F8BF03627D05 }}
+
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: 'sterwen-chatbot'
+          images: '${{ secrets.REGISTRY_LOGIN_SERVER }}/sterwen-chatbot:${{ github.sha }}'
