@@ -33,7 +33,6 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile.prod
           push: true
           tags: sterwenregistry.azurecr.io/sterwen-chatbot:${{ github.sha }},sterwenregistry.azurecr.io/sterwen-chatbot:latest
           cache-from: type=gha
