@@ -48,5 +48,5 @@ jobs:
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
-          app-name: 'sterwen-chatbot'
+          app-name: 'app-chatbot'
           images: 'sterwenregistry.azurecr.io/sterwen-chatbot:${{ github.sha }}'
