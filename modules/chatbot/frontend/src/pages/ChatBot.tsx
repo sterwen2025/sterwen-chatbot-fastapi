@@ -624,11 +624,7 @@ const ChatBot = () => {
                 display: 'flex',
                 alignItems: 'flex-end',
                 transition: 'all 0.3s',
-                boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
-                ':hover': {
-                  borderColor: '#0066a1',
-                  boxShadow: '0 4px 12px rgba(0,102,161,0.08)'
-                }
+                boxShadow: '0 2px 8px rgba(0,0,0,0.04)'
               }}>
                 <TextArea
                   value={question}
