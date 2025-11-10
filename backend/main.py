@@ -308,23 +308,29 @@ def perform_vector_search(
             chunks_collection = db["MeetingChunks"]
             meetings_collection = db["MeetingNotes"]
 
-            # STEP 1: Build MongoDB filter to narrow search space BEFORE vector search
-            match_filter = {}
+            # STEP 1: Get valid meeting IDs from filters (like macroviews does)
+            valid_meeting_ids = None
+            if (start_date and end_date) or (selected_funds and len(selected_funds) > 0):
+                print(f"Step 1: Getting valid meeting IDs from filters...")
+                meeting_filter = {}
 
-            # Add date range filter
-            if start_date and end_date:
-                start_date_obj = datetime.strptime(start_date, "%Y-%m-%d")
-                end_date_obj = datetime.strptime(end_date, "%Y-%m-%d")
-                match_filter["meeting_date"] = {
-                    "$gte": start_date_obj,
-                    "$lte": end_date_obj
-                }
-                print(f"Pre-filtering by date: {start_date} to {end_date}")
+                if start_date and end_date:
+                    start_date_obj = datetime.strptime(start_date, "%Y-%m-%d")
+                    end_date_obj = datetime.strptime(end_date, "%Y-%m-%d")
+                    meeting_filter["meeting_date"] = {
+                        "$gte": start_date_obj,
+                        "$lte": end_date_obj
+                    }
+                    print(f"Filtering by date: {start_date} to {end_date}")
 
-            # Add fund filter
-            if selected_funds and len(selected_funds) > 0:
-                match_filter["fund_name"] = {"$in": selected_funds}
-                print(f"Pre-filtering by funds: {selected_funds}")
+                if selected_funds and len(selected_funds) > 0:
+                    meeting_filter["UniqueName"] = {"$in": selected_funds}
+                    print(f"Filtering by funds: {selected_funds}")
+
+                # Query MeetingNotes collection to get valid meeting IDs
+                meeting_notes_results = list(meetings_collection.find(meeting_filter, {"ID": 1}))
+                valid_meeting_ids = set(str(doc.get("ID", "")) for doc in meeting_notes_results if doc.get("ID"))
+                print(f"Found {len(valid_meeting_ids)} valid meetings")
 
             # STEP 2: Generate embedding
             embedding_service = EmbeddingService(GEMINI_API_KEY)
@@ -334,16 +340,9 @@ def perform_vector_search(
                 task_type="RETRIEVAL_QUERY"
             )
 
-            # STEP 3: Build pipeline with $match BEFORE $search to filter first
-            pipeline = []
-
-            # Add $match stage first to filter documents before vector search
-            if match_filter:
-                pipeline.append({"$match": match_filter})
-                print(f"Added pre-filter stage: {match_filter}")
-
-            # Add vector search stage (searches only filtered documents)
-            pipeline.extend([
+            # STEP 3: Vector search on entire database ($search MUST be first in Cosmos DB)
+            print(f"Performing vector search (top_k=300)...")
+            pipeline = [
                 {
                     "$search": {
                         "cosmosSearch": {
@@ -369,14 +368,18 @@ def perform_vector_search(
                         "score": {"$meta": "searchScore"}
                     }
                 }
-            ])
+            ]
 
-            # Execute pipeline
-            print(f"Executing filtered vector search pipeline...")
             results = list(chunks_collection.aggregate(pipeline))
-            print(f"Vector search on filtered data returned {len(results)} chunks")
+            print(f"Found {len(results)} initial results")
 
-            # STEP 4: Limit to top_k
+            # STEP 4: Post-filter by meeting_id in Python (like macroviews does)
+            if valid_meeting_ids is not None:
+                print(f"Post-filtering by meeting_id...")
+                results = [r for r in results if str(r.get("meeting_id")) in valid_meeting_ids]
+                print(f"After filter: {len(results)} results")
+
+            # STEP 5: Limit to top_k
             results = results[:top_k]
             print(f"Returning top {len(results)} chunks")
 
