@@ -61,7 +61,8 @@ const ChatBot = () => {
   const [statsLoading, setStatsLoading] = useState(false);
 
   // Filter states
-  const [dataSources, setDataSources] = useState<string[]>(['Meeting Notes', 'Factsheet Comments', 'Transcripts']);
+  // Note: Only Meeting Notes has RAG implementation. Factsheet Comments and Transcripts are disabled for now.
+  const [dataSources, setDataSources] = useState<string[]>(['Meeting Notes']);
   const [useDateFilter, setUseDateFilter] = useState(false);
   const [dateRange, setDateRange] = useState<[Dayjs, Dayjs]>([dayjs().subtract(6, 'month'), dayjs()]);
   const [selectedPortfolios, setSelectedPortfolios] = useState<string[]>([]);
@@ -175,12 +176,25 @@ const ChatBot = () => {
     }
 
     setLoading(true);
+    const currentQuestion = question;
+    setQuestion(''); // Clear input immediately
+
+    // Create a temporary message with empty answer for streaming
+    const tempMessage: ChatMessage = {
+      question: currentQuestion,
+      answer: '',
+      sources: dataSources,
+      timestamp: new Date()
+    };
+
+    setConversation(prev => [...prev, tempMessage]);
+
     try {
-      const response = await fetch(API_ENDPOINTS.chatAsk, {
+      const response = await fetch(API_ENDPOINTS.chatAskStream, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          question,
+          question: currentQuestion,
           data_sources: dataSources,
           start_date: useDateFilter ? dateRange[0].format('YYYY-MM-DD') : null,
           end_date: useDateFilter ? dateRange[1].format('YYYY-MM-DD') : null,
@@ -192,21 +206,60 @@ const ChatBot = () => {
         })
       });
 
-      const data = await response.json();
+      if (!response.ok || !response.body) {
+        throw new Error('Stream response not available');
+      }
 
-      const newMessage: ChatMessage = {
-        question,
-        answer: data.answer,
-        sources: data.sources_used,
-        timestamp: new Date()
-      };
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let accumulatedAnswer = '';
 
-      setConversation([...conversation, newMessage]);
-      setQuestion('');
-      message.success('Answer received!');
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const jsonData = JSON.parse(line.slice(6));
+
+              if (jsonData.content) {
+                accumulatedAnswer += jsonData.content;
+                // Update the last message in conversation with accumulated answer
+                setConversation(prev => {
+                  const newConv = [...prev];
+                  newConv[newConv.length - 1] = {
+                    ...newConv[newConv.length - 1],
+                    answer: accumulatedAnswer
+                  };
+                  return newConv;
+                });
+              }
+
+              if (jsonData.done) {
+                message.success('Answer received!');
+              }
+
+              if (jsonData.error) {
+                throw new Error(jsonData.error);
+              }
+            } catch (e) {
+              // Ignore JSON parse errors for partial chunks
+              if (e instanceof Error && !e.message.includes('Unexpected')) {
+                throw e;
+              }
+            }
+          }
+        }
+      }
     } catch (error) {
       message.error('Failed to get answer. Please try again.');
       console.error('Error asking question:', error);
+      // Remove the temporary message if there was an error
+      setConversation(prev => prev.slice(0, -1));
     } finally {
       setLoading(false);
     }
@@ -585,11 +638,11 @@ const ChatBot = () => {
                         >
                           <ReactMarkdown
                             components={{
-                              p: ({node, ...props}) => <p style={{ margin: '0 0 12px 0', fontSize: 16 }} {...props} />,
-                              ul: ({node, ...props}) => <ul style={{ margin: '8px 0', paddingLeft: '20px', fontSize: 16 }} {...props} />,
-                              ol: ({node, ...props}) => <ol style={{ margin: '8px 0', paddingLeft: '20px', fontSize: 16 }} {...props} />,
-                              li: ({node, ...props}) => <li style={{ margin: '4px 0', fontSize: 16 }} {...props} />,
-                              strong: ({node, ...props}) => <strong style={{ color: '#005489', fontWeight: 600, fontSize: 16 }} {...props} />,
+                              p: ({node, ...props}: any) => <p style={{ margin: '0 0 12px 0', fontSize: 16 }} {...props} />,
+                              ul: ({node, ...props}: any) => <ul style={{ margin: '8px 0', paddingLeft: '20px', fontSize: 16 }} {...props} />,
+                              ol: ({node, ...props}: any) => <ol style={{ margin: '8px 0', paddingLeft: '20px', fontSize: 16 }} {...props} />,
+                              li: ({node, ...props}: any) => <li style={{ margin: '4px 0', fontSize: 16 }} {...props} />,
+                              strong: ({node, ...props}: any) => <strong style={{ color: '#005489', fontWeight: 600, fontSize: 16 }} {...props} />,
                               code: ({node, inline, ...props}: any) =>
                                 inline
                                   ? <code style={{ background: '#f5f5f5', padding: '2px 6px', borderRadius: 4, fontSize: 15, color: '#d63384' }} {...props} />

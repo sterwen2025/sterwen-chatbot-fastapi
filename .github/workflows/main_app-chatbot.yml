@@ -31,10 +31,10 @@ jobs:
       - name: Build and push container image to registry
         uses: docker/build-push-action@v3
         with:
-          context: .
+          context: ./modules/chatbot
           push: true
           tags: sterwenregistry-enbfhwczd3bxcxf2.azurecr.io/${{ secrets.AZUREAPPSERVICE_CONTAINERUSERNAME_67C9D0B32FA342C397A966356249E1E8 }}/sterwen-chatbot:${{ github.sha }}
-          file: ./Dockerfile
+          file: ./modules/chatbot/Dockerfile
 
   deploy:
     runs-on: ubuntu-latest

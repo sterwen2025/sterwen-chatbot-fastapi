@@ -6,12 +6,14 @@ FastAPI backend for intelligent Q&A system with meeting notes, factsheet comment
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime, date
 from pymongo import MongoClient
 import calendar
 import os
+import json
 import anthropic
 from dotenv import load_dotenv
 from embedding_service import EmbeddingService
@@ -27,7 +29,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # Debug: Check if API key is loaded
 print(f"CLAUDE_API_KEY loaded: {bool(CLAUDE_API_KEY)} (length: {len(CLAUDE_API_KEY) if CLAUDE_API_KEY else 0})")
 print("=" * 80)
-print("🚀 CONTAINER VERSION: 2024-11-10-NGINX-FIXED 🚀")
+print("CONTAINER VERSION: 2024-11-10-with-debug-logs")
 print("=" * 80)
 
 app = FastAPI(title="Meeting Notes Chatbot API", version="1.0.0")
@@ -306,32 +308,32 @@ def perform_vector_search(
             chunks_collection = db["MeetingChunks"]
             meetings_collection = db["MeetingNotes"]
 
-            # STEP 1: Pre-filter to get valid meeting IDs (like macroview does)
+            # STEP 1: Get valid meeting IDs from filters (like macroviews does)
             valid_meeting_ids = None
-            if start_date or end_date or selected_funds:
-                print(f"Pre-filtering meetings by date/fund...")
-                filter_query = {}
+            if (start_date and end_date) or (selected_funds and len(selected_funds) > 0):
+                print(f"Step 1: Getting valid meeting IDs from filters...")
+                meeting_filter = {}
 
-                # Add date filter
                 if start_date and end_date:
                     start_date_obj = datetime.strptime(start_date, "%Y-%m-%d")
                     end_date_obj = datetime.strptime(end_date, "%Y-%m-%d")
-                    filter_query["meeting_date"] = {
+                    meeting_filter["meeting_date"] = {
                         "$gte": start_date_obj,
                         "$lte": end_date_obj
                     }
+                    print(f"Filtering by date: {start_date} to {end_date}")
 
-                # Add fund filter
-                if selected_funds:
-                    filter_query["UniqueName"] = {"$in": selected_funds}
+                if selected_funds and len(selected_funds) > 0:
+                    meeting_filter["UniqueName"] = {"$in": selected_funds}
+                    print(f"Filtering by funds: {selected_funds}")
 
-                # Get matching meeting IDs
-                matching_meetings = list(meetings_collection.find(filter_query, {"ID": 1}))
-                valid_meeting_ids = set(str(m["ID"]) for m in matching_meetings)
-                print(f"Found {len(valid_meeting_ids)} meetings matching filters")
+                # Query MeetingNotes collection to get valid meeting IDs
+                meeting_notes_results = list(meetings_collection.find(meeting_filter, {"ID": 1}))
+                valid_meeting_ids = [str(doc.get("ID", "")) for doc in meeting_notes_results if doc.get("ID")]
+                print(f"Found {len(valid_meeting_ids)} valid meetings")
 
-                if not valid_meeting_ids:
-                    print("No meetings match the filters")
+                if len(valid_meeting_ids) == 0:
+                    print("No meetings found matching filters, returning empty results")
                     return []
 
             # STEP 2: Generate embedding
@@ -342,48 +344,78 @@ def perform_vector_search(
                 task_type="RETRIEVAL_QUERY"
             )
 
-            # STEP 3: Vector search on entire database
-            pipeline = [
-                {
-                    "$search": {
-                        "cosmosSearch": {
-                            "vector": query_embedding,
-                            "path": "embedding",
-                            "k": 300  # Fetch more for better filtering (like macroview)
-                        },
-                        "returnStoredSource": True
+            # STEP 3: Build vector search pipeline
+            # If we have meeting IDs, we need to search only within those chunks
+            if valid_meeting_ids:
+                # Use $search first (Cosmos DB requirement), then $match by meeting_id
+                print(f"Performing filtered vector search on {len(valid_meeting_ids)} meetings...")
+                pipeline = [
+                    {
+                        "$search": {
+                            "cosmosSearch": {
+                                "vector": query_embedding,
+                                "path": "embedding",
+                                "k": 300  # Get more results for filtering
+                            },
+                            "returnStoredSource": True
+                        }
+                    },
+                    {
+                        "$match": {
+                            "meeting_id": {"$in": valid_meeting_ids}
+                        }
+                    },
+                    {
+                        "$project": {
+                            "chunk_id": 1,
+                            "meeting_id": 1,
+                            "text": 1,
+                            "fund_name": 1,
+                            "manager": 1,
+                            "contact_person": 1,
+                            "meeting_date": 1,
+                            "strategy": 1,
+                            "importance": 1,
+                            "chunk_type": 1,
+                            "score": {"$meta": "searchScore"}
+                        }
                     }
-                },
-                {
-                    "$project": {
-                        "chunk_id": 1,
-                        "meeting_id": 1,
-                        "text": 1,
-                        "fund_name": 1,
-                        "manager": 1,
-                        "contact_person": 1,
-                        "meeting_date": 1,
-                        "strategy": 1,
-                        "importance": 1,
-                        "chunk_type": 1,
-                        "score": {"$meta": "searchScore"}
-                    }
-                }
-            ]
-
-            # Execute vector search
-            print(f"Performing vector search on entire database...")
-            all_results = list(chunks_collection.aggregate(pipeline))
-            print(f"Vector search returned {len(all_results)} chunks")
-
-            # STEP 4: Filter by meeting_id if filters were applied
-            if valid_meeting_ids is not None:
-                results = [r for r in all_results if str(r.get('meeting_id')) in valid_meeting_ids]
-                print(f"After filtering by meeting_id: {len(results)} chunks")
+                ]
             else:
-                results = all_results
+                # No filters, search all
+                print(f"Performing vector search on all meetings...")
+                pipeline = [
+                    {
+                        "$search": {
+                            "cosmosSearch": {
+                                "vector": query_embedding,
+                                "path": "embedding",
+                                "k": 300
+                            },
+                            "returnStoredSource": True
+                        }
+                    },
+                    {
+                        "$project": {
+                            "chunk_id": 1,
+                            "meeting_id": 1,
+                            "text": 1,
+                            "fund_name": 1,
+                            "manager": 1,
+                            "contact_person": 1,
+                            "meeting_date": 1,
+                            "strategy": 1,
+                            "importance": 1,
+                            "chunk_type": 1,
+                            "score": {"$meta": "searchScore"}
+                        }
+                    }
+                ]
 
-            # STEP 5: Limit to top_k
+            results = list(chunks_collection.aggregate(pipeline))
+            print(f"Found {len(results)} results after filtering")
+
+            # STEP 4: Limit to top_k
             results = results[:top_k]
             print(f"Returning top {len(results)} chunks")
 
@@ -497,8 +529,9 @@ def ask_claude_with_rag(
         current_prompt = f"""Based on the following data sources, please answer this question: {question}
 
 Important instructions:
-- Only use information from the provided data sources
-- If you cannot find relevant information, say so clearly
+- Use information from the provided data sources below AND from our conversation history
+- If the question refers to something mentioned earlier in our conversation, you can use that information
+- If you cannot find relevant information in either the data or conversation history, say so clearly
 - Cite specific sources when possible (meeting dates, report dates, fund names)
 - Be concise and factual
 - Distinguish between meeting notes, monthly factsheet comments, and meeting transcripts in your response
@@ -512,7 +545,7 @@ Available data sources: {', '.join(data_sources)}
             "content": current_prompt
         })
 
-        # Send to Claude
+        # Send to Claude (non-streaming version for backward compatibility)
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=4096,
@@ -526,6 +559,113 @@ Available data sources: {', '.join(data_sources)}
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error calling Claude API: {e}")
+
+def ask_claude_with_rag_streaming(
+    question: str,
+    data_sources: List[str],
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    selected_funds: Optional[List[str]] = None,
+    conversation_history: Optional[List[dict]] = None
+):
+    """Send question with RAG-retrieved data to Claude with streaming support."""
+    try:
+        client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+
+        # Prepare context (same as non-streaming version)
+        context = "Available Data Sources:\n\n"
+
+        # Use RAG for meeting notes
+        if "Meeting Notes" in data_sources:
+            print("Using RAG vector search for meeting notes...")
+            rag_chunks = perform_vector_search(
+                question=question,
+                data_sources=data_sources,
+                start_date=start_date,
+                end_date=end_date,
+                selected_funds=selected_funds,
+                top_k=50
+            )
+
+            if rag_chunks:
+                context += "=== MEETING NOTES (RAG Retrieved) ===\n\n"
+                for chunk in rag_chunks:
+                    meeting_date = chunk.get('meeting_date')
+                    if isinstance(meeting_date, datetime):
+                        meeting_date = meeting_date.strftime("%Y-%m-%d")
+
+                    context += f"Date: {meeting_date}\n"
+                    context += f"Fund: {chunk.get('fund_name', 'Unknown')}\n"
+                    context += f"Manager: {chunk.get('manager', 'Unknown')}\n"
+                    context += f"Chunk Type: {chunk.get('chunk_type', 'Unknown')}\n"
+                    context += f"Content: {chunk.get('text', '')}\n"
+                    context += f"Relevance Score: {chunk.get('score', 0):.4f}\n"
+                    context += "\n---\n\n"
+
+                print(f"Added {len(rag_chunks)} RAG chunks to context")
+                # Debug: Print first chunk to verify content
+                if rag_chunks:
+                    print(f"DEBUG - First chunk text length: {len(rag_chunks[0].get('text', ''))}")
+                    print(f"DEBUG - First chunk text preview: {rag_chunks[0].get('text', '')[:200]}")
+            else:
+                print("No RAG chunks found")
+
+        # Debug: Print context length being sent to Claude
+        print(f"DEBUG - Total context length: {len(context)} characters")
+        print(f"DEBUG - Context preview (first 500 chars):\n{context[:500]}")
+
+        # Build messages with conversation history
+        messages = []
+
+        if conversation_history:
+            for item in conversation_history[-3:]:  # Last 3 exchanges
+                messages.append({
+                    "role": "user",
+                    "content": item.get('question', '')
+                })
+                messages.append({
+                    "role": "assistant",
+                    "content": item.get('answer', '')
+                })
+
+        # Add current question with context
+        current_prompt = f"""Based on the following data sources, please answer this question: {question}
+
+Important instructions:
+- Use information from the provided data sources below AND from our conversation history
+- If the question refers to something mentioned earlier in our conversation, you can use that information
+- If you cannot find relevant information in either the data or conversation history, say so clearly
+- Cite specific sources when possible (meeting dates, report dates, fund names)
+- Be concise and factual
+- Distinguish between meeting notes, monthly factsheet comments, and meeting transcripts in your response
+
+Available data sources: {', '.join(data_sources)}
+
+{context}"""
+
+        messages.append({
+            "role": "user",
+            "content": current_prompt
+        })
+
+        # Debug: Print the final prompt being sent to Claude
+        print(f"DEBUG - Final prompt length: {len(current_prompt)} characters")
+        print(f"DEBUG - Final prompt preview (first 1000 chars):\n{current_prompt[:1000]}")
+
+        # Send to Claude with streaming
+        with client.messages.stream(
+            model="claude-sonnet-4-20250514",
+            max_tokens=4096,
+            messages=messages
+        ) as stream:
+            for text in stream.text_stream:
+                yield text
+
+    except Exception as e:
+        print(f"ERROR in ask_claude_streaming: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        yield f"Error: {str(e)}"
 
 # Portfolio helper functions
 STERWEN_BEST_IDEAS_FUNDS = [
@@ -726,7 +866,7 @@ async def get_filter_stats(request: ChatRequest):
 
 @app.post("/api/chat/ask", response_model=ChatResponse)
 async def ask_question(request: ChatRequest):
-    """Ask a question with RAG-powered filtered data."""
+    """Ask a question with RAG-powered filtered data (non-streaming)."""
     try:
         # Use the new RAG-powered function
         print(f"\n=== New Question ===")
@@ -758,6 +898,48 @@ async def ask_question(request: ChatRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing question: {e}")
+
+@app.post("/api/chat/ask/stream")
+async def ask_question_stream(request: ChatRequest):
+    """Ask a question with RAG-powered filtered data (streaming)."""
+    try:
+        print(f"\n=== New Streaming Question ===")
+        print(f"Question: {request.question}")
+        print(f"Data sources: {request.data_sources}")
+        print(f"Date range: {request.start_date} to {request.end_date}")
+        print(f"Selected funds: {request.selected_funds}")
+
+        def generate():
+            try:
+                for text_chunk in ask_claude_with_rag_streaming(
+                    question=request.question,
+                    data_sources=request.data_sources,
+                    start_date=request.start_date,
+                    end_date=request.end_date,
+                    selected_funds=request.selected_funds,
+                    conversation_history=request.conversation_history
+                ):
+                    # Send each chunk as Server-Sent Events format
+                    yield f"data: {json.dumps({'content': text_chunk})}\n\n"
+
+                # Send done signal
+                yield f"data: {json.dumps({'done': True})}\n\n"
+            except Exception as e:
+                print(f"Error in generate: {str(e)}")
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"  # Disable nginx buffering
+            }
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing streaming question: {e}")
 
 if __name__ == "__main__":
     import uvicorn
