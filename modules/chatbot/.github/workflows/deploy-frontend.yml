@@ -64,3 +64,9 @@ jobs:
           resource-group-name: 'sterwen-chatbot-rg'
           images: 'sterwenregistry-enbfhwczd3bxcxf2.azurecr.io/sterwen-chatbot:latest'
 
+      - name: Force restart Web App to pull latest image
+        uses: azure/cli@v2
+        with:
+          inlineScript: |
+            az webapp restart --name app-chatbot-g2b7g7e0avbje0bq --resource-group sterwen-chatbot-rg
+
