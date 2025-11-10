@@ -329,8 +329,12 @@ def perform_vector_search(
 
                 # Query MeetingNotes collection to get valid meeting IDs
                 meeting_notes_results = list(meetings_collection.find(meeting_filter, {"ID": 1}))
-                valid_meeting_ids = set(str(doc.get("ID", "")) for doc in meeting_notes_results if doc.get("ID"))
+                valid_meeting_ids = [str(doc.get("ID", "")) for doc in meeting_notes_results if doc.get("ID")]
                 print(f"Found {len(valid_meeting_ids)} valid meetings")
+
+                if len(valid_meeting_ids) == 0:
+                    print("No meetings found matching filters, returning empty results")
+                    return []
 
             # STEP 2: Generate embedding
             embedding_service = EmbeddingService(GEMINI_API_KEY)
@@ -340,46 +344,78 @@ def perform_vector_search(
                 task_type="RETRIEVAL_QUERY"
             )
 
-            # STEP 3: Vector search on entire database ($search MUST be first in Cosmos DB)
-            print(f"Performing vector search (top_k=300)...")
-            pipeline = [
-                {
-                    "$search": {
-                        "cosmosSearch": {
-                            "vector": query_embedding,
-                            "path": "embedding",
-                            "k": 300
-                        },
-                        "returnStoredSource": True
+            # STEP 3: Build vector search pipeline
+            # If we have meeting IDs, we need to search only within those chunks
+            if valid_meeting_ids:
+                # Use $search first (Cosmos DB requirement), then $match by meeting_id
+                print(f"Performing filtered vector search on {len(valid_meeting_ids)} meetings...")
+                pipeline = [
+                    {
+                        "$search": {
+                            "cosmosSearch": {
+                                "vector": query_embedding,
+                                "path": "embedding",
+                                "k": 300  # Get more results for filtering
+                            },
+                            "returnStoredSource": True
+                        }
+                    },
+                    {
+                        "$match": {
+                            "meeting_id": {"$in": valid_meeting_ids}
+                        }
+                    },
+                    {
+                        "$project": {
+                            "chunk_id": 1,
+                            "meeting_id": 1,
+                            "text": 1,
+                            "fund_name": 1,
+                            "manager": 1,
+                            "contact_person": 1,
+                            "meeting_date": 1,
+                            "strategy": 1,
+                            "importance": 1,
+                            "chunk_type": 1,
+                            "score": {"$meta": "searchScore"}
+                        }
                     }
-                },
-                {
-                    "$project": {
-                        "chunk_id": 1,
-                        "meeting_id": 1,
-                        "text": 1,
-                        "fund_name": 1,
-                        "manager": 1,
-                        "contact_person": 1,
-                        "meeting_date": 1,
-                        "strategy": 1,
-                        "importance": 1,
-                        "chunk_type": 1,
-                        "score": {"$meta": "searchScore"}
+                ]
+            else:
+                # No filters, search all
+                print(f"Performing vector search on all meetings...")
+                pipeline = [
+                    {
+                        "$search": {
+                            "cosmosSearch": {
+                                "vector": query_embedding,
+                                "path": "embedding",
+                                "k": 300
+                            },
+                            "returnStoredSource": True
+                        }
+                    },
+                    {
+                        "$project": {
+                            "chunk_id": 1,
+                            "meeting_id": 1,
+                            "text": 1,
+                            "fund_name": 1,
+                            "manager": 1,
+                            "contact_person": 1,
+                            "meeting_date": 1,
+                            "strategy": 1,
+                            "importance": 1,
+                            "chunk_type": 1,
+                            "score": {"$meta": "searchScore"}
+                        }
                     }
-                }
-            ]
+                ]
 
             results = list(chunks_collection.aggregate(pipeline))
-            print(f"Found {len(results)} initial results")
+            print(f"Found {len(results)} results after filtering")
 
-            # STEP 4: Post-filter by meeting_id in Python (like macroviews does)
-            if valid_meeting_ids is not None:
-                print(f"Post-filtering by meeting_id...")
-                results = [r for r in results if str(r.get("meeting_id")) in valid_meeting_ids]
-                print(f"After filter: {len(results)} results")
-
-            # STEP 5: Limit to top_k
+            # STEP 4: Limit to top_k
             results = results[:top_k]
             print(f"Returning top {len(results)} chunks")
 
