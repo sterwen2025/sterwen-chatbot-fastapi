@@ -61,8 +61,10 @@ Copied from `modules/macroviews/backend/embedding_service.py`. Key features:
 
 Added Gemini API key:
 ```env
-GEMINI_API_KEY=AIzaSyC5pkc0ae1npMMDP2M2vGfkq8uFJAyjh0Y
+GEMINI_API_KEY=your_gemini_api_key_here
 ```
+
+**Note:** Never commit actual API keys to git. Always use environment variables and keep keys in `.env` files that are in `.gitignore`.
 
 ### 3. Dependencies
 
