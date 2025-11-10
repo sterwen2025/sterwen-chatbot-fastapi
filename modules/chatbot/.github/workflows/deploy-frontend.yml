@@ -55,16 +55,17 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_5566EBC31B5C4950B97F328050FC3F7F }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_E42A218E714548BF93DA12CA7FD9E5CA }}
 
-      - name: Deploy to Azure Web App
-        id: deploy-to-webapp
-        uses: azure/webapps-deploy@v2
+      - name: Configure Web App to use latest container image
+        uses: azure/cli@v2
         with:
-          app-name: 'app-chatbot-g2b7g7e0avbje0bq'
-          slot-name: 'Production'
-          resource-group-name: 'sterwen-chatbot-rg'
-          images: 'sterwenregistry-enbfhwczd3bxcxf2.azurecr.io/sterwen-chatbot:latest'
+          inlineScript: |
+            az webapp config container set \
+              --name app-chatbot-g2b7g7e0avbje0bq \
+              --resource-group sterwen-chatbot-rg \
+              --docker-custom-image-name sterwenregistry-enbfhwczd3bxcxf2.azurecr.io/sterwen-chatbot:latest \
+              --docker-registry-server-url https://sterwenregistry-enbfhwczd3bxcxf2.azurecr.io
 
-      - name: Force restart Web App to pull latest image
+      - name: Restart Web App to apply new container
         uses: azure/cli@v2
         with:
           inlineScript: |
