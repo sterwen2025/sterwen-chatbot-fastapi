@@ -308,27 +308,7 @@ def perform_vector_search(
             chunks_collection = db["MeetingChunks"]
             meetings_collection = db["MeetingNotes"]
 
-            # STEP 1: Build the filter for vector search
-            vector_filter = {}
-
-            # Add date range filter
-            if start_date and end_date:
-                start_date_obj = datetime.strptime(start_date, "%Y-%m-%d")
-                end_date_obj = datetime.strptime(end_date, "%Y-%m-%d")
-                vector_filter["meeting_date"] = {
-                    "$gte": start_date_obj,
-                    "$lte": end_date_obj
-                }
-                print(f"Adding date filter: {start_date} to {end_date}")
-
-            # Add fund filter
-            if selected_funds and len(selected_funds) > 0:
-                vector_filter["fund_name"] = {"$in": selected_funds}
-                print(f"Adding fund filter: {selected_funds}")
-
-            print(f"Vector search filter: {vector_filter}")
-
-            # STEP 2: Generate embedding
+            # STEP 1: Generate embedding first (do vector search without filters due to index limitations)
             embedding_service = EmbeddingService(GEMINI_API_KEY)
             print(f"Generating embedding for query: {question[:100]}...")
             query_embedding = embedding_service.generate_embedding(
@@ -336,24 +316,18 @@ def perform_vector_search(
                 task_type="RETRIEVAL_QUERY"
             )
 
-            # STEP 3: Vector search with filter
-            search_stage = {
-                "$search": {
-                    "cosmosSearch": {
-                        "vector": query_embedding,
-                        "path": "embedding",
-                        "k": 300
-                    },
-                    "returnStoredSource": True
-                }
-            }
-
-            # Add filter to search if we have any filters
-            if vector_filter:
-                search_stage["$search"]["cosmosSearch"]["filter"] = vector_filter
-
+            # STEP 2: Vector search without filters (will filter after)
             pipeline = [
-                search_stage,
+                {
+                    "$search": {
+                        "cosmosSearch": {
+                            "vector": query_embedding,
+                            "path": "embedding",
+                            "k": 300  # Get more results to ensure we have enough after filtering
+                        },
+                        "returnStoredSource": True
+                    }
+                },
                 {
                     "$project": {
                         "chunk_id": 1,
@@ -371,10 +345,44 @@ def perform_vector_search(
                 }
             ]
 
-            # Execute vector search with filters
-            print(f"Performing filtered vector search...")
-            results = list(chunks_collection.aggregate(pipeline))
-            print(f"Vector search returned {len(results)} chunks")
+            # Execute vector search
+            print(f"Performing vector search...")
+            all_results = list(chunks_collection.aggregate(pipeline))
+            print(f"Vector search returned {len(all_results)} chunks")
+
+            # STEP 3: Post-filter results by date and fund
+            results = all_results
+
+            # Filter by date range if specified
+            if start_date and end_date:
+                start_date_obj = datetime.strptime(start_date, "%Y-%m-%d")
+                end_date_obj = datetime.strptime(end_date, "%Y-%m-%d")
+
+                filtered_by_date = []
+                for r in results:
+                    meeting_date = r.get('meeting_date')
+                    if meeting_date:
+                        # Handle both datetime objects and strings
+                        if isinstance(meeting_date, str):
+                            try:
+                                meeting_date = datetime.strptime(meeting_date, "%Y-%m-%d")
+                            except:
+                                continue
+                        elif isinstance(meeting_date, datetime):
+                            pass
+                        else:
+                            continue
+
+                        if start_date_obj <= meeting_date <= end_date_obj:
+                            filtered_by_date.append(r)
+
+                results = filtered_by_date
+                print(f"After date filtering ({start_date} to {end_date}): {len(results)} chunks")
+
+            # Filter by fund names if specified
+            if selected_funds and len(selected_funds) > 0:
+                results = [r for r in results if r.get('fund_name') in selected_funds]
+                print(f"After fund filtering ({len(selected_funds)} funds): {len(results)} chunks")
 
             # STEP 4: Limit to top_k
             results = results[:top_k]
