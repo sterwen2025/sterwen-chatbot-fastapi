@@ -1,0 +1,63 @@
+# Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
+# More GitHub Actions for Azure: https://github.com/Azure/actions
+
+name: Build and deploy container app to Azure Web App - app-chatbot
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read #This is required for actions/checkout
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to container registry
+        uses: docker/login-action@v2
+        with:
+          registry: sterwenregistry-enbfhwczd3bxcxf2.azurecr.io/
+          username: ${{ secrets.AZUREAPPSERVICE_CONTAINERUSERNAME_1240B67E2EE84E0087A5B3FC57CC24CD }}
+          password: ${{ secrets.AZUREAPPSERVICE_CONTAINERPASSWORD_55736C28C15D4DBA80CD186A45A6E191 }}
+
+      - name: Build and push container image to registry
+        uses: docker/build-push-action@v3
+        with:
+          context: .
+          push: true
+          tags: sterwenregistry-enbfhwczd3bxcxf2.azurecr.io/${{ secrets.AZUREAPPSERVICE_CONTAINERUSERNAME_1240B67E2EE84E0087A5B3FC57CC24CD }}/sterwen-chatbot:${{ github.sha }}
+          file: ./Dockerfile
+
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write #This is required for requesting the JWT
+      contents: read #This is required for actions/checkout
+
+    needs: build
+    
+    steps:
+      
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_12D621C3420C46568A6E9892A89B388C }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_CA94AA696DC2487FAA8F3F8283CB6427 }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_864F7511ABFE426B8B36916303CC42CF }}
+
+      - name: Deploy to Azure Web App
+        id: deploy-to-webapp
+        uses: azure/webapps-deploy@v2
+        with:
+          app-name: 'app-chatbot'
+          slot-name: 'Production'
+          images: 'sterwenregistry-enbfhwczd3bxcxf2.azurecr.io/${{ secrets.AZUREAPPSERVICE_CONTAINERUSERNAME_1240B67E2EE84E0087A5B3FC57CC24CD }}/sterwen-chatbot:${{ github.sha }}'
+          
