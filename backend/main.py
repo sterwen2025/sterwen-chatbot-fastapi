@@ -6,12 +6,14 @@ FastAPI backend for intelligent Q&A system with meeting notes, factsheet comment
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime, date
 from pymongo import MongoClient
 import calendar
 import os
+import json
 import anthropic
 from dotenv import load_dotenv
 from embedding_service import EmbeddingService
@@ -512,7 +514,7 @@ Available data sources: {', '.join(data_sources)}
             "content": current_prompt
         })
 
-        # Send to Claude
+        # Send to Claude (non-streaming version for backward compatibility)
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=4096,
@@ -526,6 +528,100 @@ Available data sources: {', '.join(data_sources)}
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error calling Claude API: {e}")
+
+def ask_claude_with_rag_streaming(
+    question: str,
+    data_sources: List[str],
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    selected_funds: Optional[List[str]] = None,
+    conversation_history: Optional[List[dict]] = None
+):
+    """Send question with RAG-retrieved data to Claude with streaming support."""
+    try:
+        client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+
+        # Prepare context (same as non-streaming version)
+        context = "Available Data Sources:\n\n"
+
+        # Use RAG for meeting notes
+        if "Meeting Notes" in data_sources:
+            print("Using RAG vector search for meeting notes...")
+            rag_chunks = perform_vector_search(
+                question=question,
+                data_sources=data_sources,
+                start_date=start_date,
+                end_date=end_date,
+                selected_funds=selected_funds,
+                top_k=50
+            )
+
+            if rag_chunks:
+                context += "=== MEETING NOTES (RAG Retrieved) ===\n\n"
+                for chunk in rag_chunks:
+                    meeting_date = chunk.get('meeting_date')
+                    if isinstance(meeting_date, datetime):
+                        meeting_date = meeting_date.strftime("%Y-%m-%d")
+
+                    context += f"Date: {meeting_date}\n"
+                    context += f"Fund: {chunk.get('fund_name', 'Unknown')}\n"
+                    context += f"Manager: {chunk.get('manager', 'Unknown')}\n"
+                    context += f"Chunk Type: {chunk.get('chunk_type', 'Unknown')}\n"
+                    context += f"Content: {chunk.get('text', '')}\n"
+                    context += f"Relevance Score: {chunk.get('score', 0):.4f}\n"
+                    context += "\n---\n\n"
+
+                print(f"Added {len(rag_chunks)} RAG chunks to context")
+            else:
+                print("No RAG chunks found")
+
+        # Build messages with conversation history
+        messages = []
+
+        if conversation_history:
+            for item in conversation_history[-3:]:  # Last 3 exchanges
+                messages.append({
+                    "role": "user",
+                    "content": item.get('question', '')
+                })
+                messages.append({
+                    "role": "assistant",
+                    "content": item.get('answer', '')
+                })
+
+        # Add current question with context
+        current_prompt = f"""Based on the following data sources, please answer this question: {question}
+
+Important instructions:
+- Only use information from the provided data sources
+- If you cannot find relevant information, say so clearly
+- Cite specific sources when possible (meeting dates, report dates, fund names)
+- Be concise and factual
+- Distinguish between meeting notes, monthly factsheet comments, and meeting transcripts in your response
+
+Available data sources: {', '.join(data_sources)}
+
+{context}"""
+
+        messages.append({
+            "role": "user",
+            "content": current_prompt
+        })
+
+        # Send to Claude with streaming
+        with client.messages.stream(
+            model="claude-sonnet-4-20250514",
+            max_tokens=4096,
+            messages=messages
+        ) as stream:
+            for text in stream.text_stream:
+                yield text
+
+    except Exception as e:
+        print(f"ERROR in ask_claude_streaming: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        yield f"Error: {str(e)}"
 
 # Portfolio helper functions
 STERWEN_BEST_IDEAS_FUNDS = [
@@ -726,7 +822,7 @@ async def get_filter_stats(request: ChatRequest):
 
 @app.post("/api/chat/ask", response_model=ChatResponse)
 async def ask_question(request: ChatRequest):
-    """Ask a question with RAG-powered filtered data."""
+    """Ask a question with RAG-powered filtered data (non-streaming)."""
     try:
         # Use the new RAG-powered function
         print(f"\n=== New Question ===")
@@ -758,6 +854,48 @@ async def ask_question(request: ChatRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing question: {e}")
+
+@app.post("/api/chat/ask/stream")
+async def ask_question_stream(request: ChatRequest):
+    """Ask a question with RAG-powered filtered data (streaming)."""
+    try:
+        print(f"\n=== New Streaming Question ===")
+        print(f"Question: {request.question}")
+        print(f"Data sources: {request.data_sources}")
+        print(f"Date range: {request.start_date} to {request.end_date}")
+        print(f"Selected funds: {request.selected_funds}")
+
+        def generate():
+            try:
+                for text_chunk in ask_claude_with_rag_streaming(
+                    question=request.question,
+                    data_sources=request.data_sources,
+                    start_date=request.start_date,
+                    end_date=request.end_date,
+                    selected_funds=request.selected_funds,
+                    conversation_history=request.conversation_history
+                ):
+                    # Send each chunk as Server-Sent Events format
+                    yield f"data: {json.dumps({'content': text_chunk})}\n\n"
+
+                # Send done signal
+                yield f"data: {json.dumps({'done': True})}\n\n"
+            except Exception as e:
+                print(f"Error in generate: {str(e)}")
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"  # Disable nginx buffering
+            }
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing streaming question: {e}")
 
 if __name__ == "__main__":
     import uvicorn

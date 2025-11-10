@@ -6,4 +6,5 @@ export const API_ENDPOINTS = {
   chatPortfoliosFunds: `${API_BASE_URL}/chat/portfolios/funds`,
   chatStats: `${API_BASE_URL}/chat/stats`,
   chatAsk: `${API_BASE_URL}/chat/ask`,
+  chatAskStream: `${API_BASE_URL}/chat/ask/stream`,
 };

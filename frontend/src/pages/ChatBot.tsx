@@ -175,12 +175,25 @@ const ChatBot = () => {
     }
 
     setLoading(true);
+    const currentQuestion = question;
+    setQuestion(''); // Clear input immediately
+
+    // Create a temporary message with empty answer for streaming
+    const tempMessage: ChatMessage = {
+      question: currentQuestion,
+      answer: '',
+      sources: dataSources,
+      timestamp: new Date()
+    };
+
+    setConversation(prev => [...prev, tempMessage]);
+
     try {
-      const response = await fetch(API_ENDPOINTS.chatAsk, {
+      const response = await fetch(API_ENDPOINTS.chatAskStream, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          question,
+          question: currentQuestion,
           data_sources: dataSources,
           start_date: useDateFilter ? dateRange[0].format('YYYY-MM-DD') : null,
           end_date: useDateFilter ? dateRange[1].format('YYYY-MM-DD') : null,
@@ -192,21 +205,60 @@ const ChatBot = () => {
         })
       });
 
-      const data = await response.json();
+      if (!response.ok || !response.body) {
+        throw new Error('Stream response not available');
+      }
 
-      const newMessage: ChatMessage = {
-        question,
-        answer: data.answer,
-        sources: data.sources_used,
-        timestamp: new Date()
-      };
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let accumulatedAnswer = '';
 
-      setConversation([...conversation, newMessage]);
-      setQuestion('');
-      message.success('Answer received!');
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const jsonData = JSON.parse(line.slice(6));
+
+              if (jsonData.content) {
+                accumulatedAnswer += jsonData.content;
+                // Update the last message in conversation with accumulated answer
+                setConversation(prev => {
+                  const newConv = [...prev];
+                  newConv[newConv.length - 1] = {
+                    ...newConv[newConv.length - 1],
+                    answer: accumulatedAnswer
+                  };
+                  return newConv;
+                });
+              }
+
+              if (jsonData.done) {
+                message.success('Answer received!');
+              }
+
+              if (jsonData.error) {
+                throw new Error(jsonData.error);
+              }
+            } catch (e) {
+              // Ignore JSON parse errors for partial chunks
+              if (e instanceof Error && !e.message.includes('Unexpected')) {
+                throw e;
+              }
+            }
+          }
+        }
+      }
     } catch (error) {
       message.error('Failed to get answer. Please try again.');
       console.error('Error asking question:', error);
+      // Remove the temporary message if there was an error
+      setConversation(prev => prev.slice(0, -1));
     } finally {
       setLoading(false);
     }
