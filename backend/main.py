@@ -308,7 +308,25 @@ def perform_vector_search(
             chunks_collection = db["MeetingChunks"]
             meetings_collection = db["MeetingNotes"]
 
-            # STEP 1: Generate embedding first (do vector search without filters due to index limitations)
+            # STEP 1: Build MongoDB filter to narrow search space BEFORE vector search
+            match_filter = {}
+
+            # Add date range filter
+            if start_date and end_date:
+                start_date_obj = datetime.strptime(start_date, "%Y-%m-%d")
+                end_date_obj = datetime.strptime(end_date, "%Y-%m-%d")
+                match_filter["meeting_date"] = {
+                    "$gte": start_date_obj,
+                    "$lte": end_date_obj
+                }
+                print(f"Pre-filtering by date: {start_date} to {end_date}")
+
+            # Add fund filter
+            if selected_funds and len(selected_funds) > 0:
+                match_filter["fund_name"] = {"$in": selected_funds}
+                print(f"Pre-filtering by funds: {selected_funds}")
+
+            # STEP 2: Generate embedding
             embedding_service = EmbeddingService(GEMINI_API_KEY)
             print(f"Generating embedding for query: {question[:100]}...")
             query_embedding = embedding_service.generate_embedding(
@@ -316,14 +334,22 @@ def perform_vector_search(
                 task_type="RETRIEVAL_QUERY"
             )
 
-            # STEP 2: Vector search without filters (will filter after)
-            pipeline = [
+            # STEP 3: Build pipeline with $match BEFORE $search to filter first
+            pipeline = []
+
+            # Add $match stage first to filter documents before vector search
+            if match_filter:
+                pipeline.append({"$match": match_filter})
+                print(f"Added pre-filter stage: {match_filter}")
+
+            # Add vector search stage (searches only filtered documents)
+            pipeline.extend([
                 {
                     "$search": {
                         "cosmosSearch": {
                             "vector": query_embedding,
                             "path": "embedding",
-                            "k": 300  # Get more results to ensure we have enough after filtering
+                            "k": 300
                         },
                         "returnStoredSource": True
                     }
@@ -343,46 +369,12 @@ def perform_vector_search(
                         "score": {"$meta": "searchScore"}
                     }
                 }
-            ]
+            ])
 
-            # Execute vector search
-            print(f"Performing vector search...")
-            all_results = list(chunks_collection.aggregate(pipeline))
-            print(f"Vector search returned {len(all_results)} chunks")
-
-            # STEP 3: Post-filter results by date and fund
-            results = all_results
-
-            # Filter by date range if specified
-            if start_date and end_date:
-                start_date_obj = datetime.strptime(start_date, "%Y-%m-%d")
-                end_date_obj = datetime.strptime(end_date, "%Y-%m-%d")
-
-                filtered_by_date = []
-                for r in results:
-                    meeting_date = r.get('meeting_date')
-                    if meeting_date:
-                        # Handle both datetime objects and strings
-                        if isinstance(meeting_date, str):
-                            try:
-                                meeting_date = datetime.strptime(meeting_date, "%Y-%m-%d")
-                            except:
-                                continue
-                        elif isinstance(meeting_date, datetime):
-                            pass
-                        else:
-                            continue
-
-                        if start_date_obj <= meeting_date <= end_date_obj:
-                            filtered_by_date.append(r)
-
-                results = filtered_by_date
-                print(f"After date filtering ({start_date} to {end_date}): {len(results)} chunks")
-
-            # Filter by fund names if specified
-            if selected_funds and len(selected_funds) > 0:
-                results = [r for r in results if r.get('fund_name') in selected_funds]
-                print(f"After fund filtering ({len(selected_funds)} funds): {len(results)} chunks")
+            # Execute pipeline
+            print(f"Executing filtered vector search pipeline...")
+            results = list(chunks_collection.aggregate(pipeline))
+            print(f"Vector search on filtered data returned {len(results)} chunks")
 
             # STEP 4: Limit to top_k
             results = results[:top_k]
@@ -498,8 +490,9 @@ def ask_claude_with_rag(
         current_prompt = f"""Based on the following data sources, please answer this question: {question}
 
 Important instructions:
-- Only use information from the provided data sources
-- If you cannot find relevant information, say so clearly
+- Use information from the provided data sources below AND from our conversation history
+- If the question refers to something mentioned earlier in our conversation, you can use that information
+- If you cannot find relevant information in either the data or conversation history, say so clearly
 - Cite specific sources when possible (meeting dates, report dates, fund names)
 - Be concise and factual
 - Distinguish between meeting notes, monthly factsheet comments, and meeting transcripts in your response
@@ -592,8 +585,9 @@ def ask_claude_with_rag_streaming(
         current_prompt = f"""Based on the following data sources, please answer this question: {question}
 
 Important instructions:
-- Only use information from the provided data sources
-- If you cannot find relevant information, say so clearly
+- Use information from the provided data sources below AND from our conversation history
+- If the question refers to something mentioned earlier in our conversation, you can use that information
+- If you cannot find relevant information in either the data or conversation history, say so clearly
 - Cite specific sources when possible (meeting dates, report dates, fund names)
 - Be concise and factual
 - Distinguish between meeting notes, monthly factsheet comments, and meeting transcripts in your response
