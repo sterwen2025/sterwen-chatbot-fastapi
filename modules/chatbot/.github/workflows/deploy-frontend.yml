@@ -63,7 +63,18 @@ jobs:
               --name app-chatbot-g2b7g7e0avbje0bq \
               --resource-group sterwen-chatbot-rg \
               --docker-custom-image-name sterwenregistry-enbfhwczd3bxcxf2.azurecr.io/sterwen-chatbot:latest \
-              --docker-registry-server-url https://sterwenregistry-enbfhwczd3bxcxf2.azurecr.io
+              --docker-registry-server-url https://sterwenregistry-enbfhwczd3bxcxf2.azurecr.io \
+              --docker-registry-server-user ${{ secrets.AZUREAPPSERVICE_CONTAINERUSERNAME_A06FD884267C4A4EB992B1A4D551284A }} \
+              --docker-registry-server-password ${{ secrets.AZUREAPPSERVICE_CONTAINERPASSWORD_A3DEB582AB4048EF8ABD4CB58B564370 }}
+
+      - name: Enable continuous deployment
+        uses: azure/cli@v2
+        with:
+          inlineScript: |
+            az webapp deployment container config \
+              --name app-chatbot-g2b7g7e0avbje0bq \
+              --resource-group sterwen-chatbot-rg \
+              --enable-cd true
 
       - name: Restart Web App to apply new container
         uses: azure/cli@v2
