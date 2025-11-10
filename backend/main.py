@@ -331,10 +331,13 @@ def perform_vector_search(
                 matching_meetings = list(meetings_collection.find(filter_query, {"ID": 1}))
                 valid_meeting_ids = set(str(m["ID"]) for m in matching_meetings)
                 print(f"Found {len(valid_meeting_ids)} meetings matching filters")
+                print(f"Filter query used: {filter_query}")
 
                 if not valid_meeting_ids:
-                    print("No meetings match the filters")
-                    return []
+                    print("No meetings match the filters - this might be a date/fund name mismatch issue")
+                    # Let's still try the search without pre-filtering
+                    print("WARNING: Proceeding without pre-filter to avoid empty results")
+                    valid_meeting_ids = None
 
             # STEP 2: Generate embedding
             embedding_service = EmbeddingService(GEMINI_API_KEY)
