@@ -58,9 +58,7 @@ COPY --from=frontend-builder /app/frontend/dist /usr/share/nginx/html
 # Copy nginx configuration
 COPY nginx.conf /etc/nginx/sites-available/default
 RUN rm -f /etc/nginx/sites-enabled/default && \
-    ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/ && \
-    # Disable daemon mode for supervisor
-    echo "daemon off;" >> /etc/nginx/nginx.conf
+    ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/
 
 # Copy supervisor configuration
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
