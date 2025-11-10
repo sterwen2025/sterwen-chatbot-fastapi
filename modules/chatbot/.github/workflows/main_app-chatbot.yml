@@ -25,15 +25,15 @@ jobs:
         uses: docker/login-action@v2
         with:
           registry: sterwenregistry-enbfhwczd3bxcxf2.azurecr.io/
-          username: ${{ secrets.AZUREAPPSERVICE_CONTAINERUSERNAME_1240B67E2EE84E0087A5B3FC57CC24CD }}
-          password: ${{ secrets.AZUREAPPSERVICE_CONTAINERPASSWORD_55736C28C15D4DBA80CD186A45A6E191 }}
+          username: ${{ secrets.AZUREAPPSERVICE_CONTAINERUSERNAME_67C9D0B32FA342C397A966356249E1E8 }}
+          password: ${{ secrets.AZUREAPPSERVICE_CONTAINERPASSWORD_937CF1988E3545C096078F3D5371544B }}
 
       - name: Build and push container image to registry
         uses: docker/build-push-action@v3
         with:
           context: .
           push: true
-          tags: sterwenregistry-enbfhwczd3bxcxf2.azurecr.io/${{ secrets.AZUREAPPSERVICE_CONTAINERUSERNAME_1240B67E2EE84E0087A5B3FC57CC24CD }}/sterwen-chatbot:${{ github.sha }}
+          tags: sterwenregistry-enbfhwczd3bxcxf2.azurecr.io/${{ secrets.AZUREAPPSERVICE_CONTAINERUSERNAME_67C9D0B32FA342C397A966356249E1E8 }}/sterwen-chatbot:${{ github.sha }}
           file: ./Dockerfile
 
   deploy:
@@ -49,16 +49,15 @@ jobs:
       - name: Login to Azure
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_12D621C3420C46568A6E9892A89B388C }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_CA94AA696DC2487FAA8F3F8283CB6427 }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_864F7511ABFE426B8B36916303CC42CF }}
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_35C9BDBC0FF34C1C8C6679974A8C7300 }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_29265939E22C4F2BB23206912B874E98 }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_41D7020E465F4FDFB45E6A504AF89914 }}
 
       - name: Deploy to Azure Web App
         id: deploy-to-webapp
         uses: azure/webapps-deploy@v2
         with:
-          app-name: 'app-chatbot-g2b7g7e0avbje0bq'
+          app-name: 'app-chatbot'
           slot-name: 'Production'
-          resource-group-name: 'sterwen-chatbot-rg'
-          images: 'sterwenregistry-enbfhwczd3bxcxf2.azurecr.io/${{ secrets.AZUREAPPSERVICE_CONTAINERUSERNAME_1240B67E2EE84E0087A5B3FC57CC24CD }}/sterwen-chatbot:${{ github.sha }}'
+          images: 'sterwenregistry-enbfhwczd3bxcxf2.azurecr.io/${{ secrets.AZUREAPPSERVICE_CONTAINERUSERNAME_67C9D0B32FA342C397A966356249E1E8 }}/sterwen-chatbot:${{ github.sha }}'
           
