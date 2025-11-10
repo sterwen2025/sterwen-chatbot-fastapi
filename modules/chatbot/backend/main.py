@@ -26,6 +26,9 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 # Debug: Check if API key is loaded
 print(f"CLAUDE_API_KEY loaded: {bool(CLAUDE_API_KEY)} (length: {len(CLAUDE_API_KEY) if CLAUDE_API_KEY else 0})")
+print("=" * 80)
+print("🚀 CONTAINER VERSION: 2024-11-10-NGINX-FIXED 🚀")
+print("=" * 80)
 
 app = FastAPI(title="Meeting Notes Chatbot API", version="1.0.0")
 
