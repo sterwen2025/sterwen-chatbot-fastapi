@@ -308,36 +308,25 @@ def perform_vector_search(
             chunks_collection = db["MeetingChunks"]
             meetings_collection = db["MeetingNotes"]
 
-            # STEP 1: Pre-filter to get valid meeting IDs (like macroview does)
-            valid_meeting_ids = None
-            if start_date or end_date or selected_funds:
-                print(f"Pre-filtering meetings by date/fund...")
-                filter_query = {}
+            # STEP 1: Build the filter for vector search
+            vector_filter = {}
 
-                # Add date filter
-                if start_date and end_date:
-                    start_date_obj = datetime.strptime(start_date, "%Y-%m-%d")
-                    end_date_obj = datetime.strptime(end_date, "%Y-%m-%d")
-                    filter_query["meeting_date"] = {
-                        "$gte": start_date_obj,
-                        "$lte": end_date_obj
-                    }
+            # Add date range filter
+            if start_date and end_date:
+                start_date_obj = datetime.strptime(start_date, "%Y-%m-%d")
+                end_date_obj = datetime.strptime(end_date, "%Y-%m-%d")
+                vector_filter["meeting_date"] = {
+                    "$gte": start_date_obj,
+                    "$lte": end_date_obj
+                }
+                print(f"Adding date filter: {start_date} to {end_date}")
 
-                # Add fund filter
-                if selected_funds:
-                    filter_query["UniqueName"] = {"$in": selected_funds}
+            # Add fund filter
+            if selected_funds and len(selected_funds) > 0:
+                vector_filter["fund_name"] = {"$in": selected_funds}
+                print(f"Adding fund filter: {selected_funds}")
 
-                # Get matching meeting IDs
-                matching_meetings = list(meetings_collection.find(filter_query, {"ID": 1}))
-                valid_meeting_ids = set(str(m["ID"]) for m in matching_meetings)
-                print(f"Found {len(valid_meeting_ids)} meetings matching filters")
-                print(f"Filter query used: {filter_query}")
-
-                if not valid_meeting_ids:
-                    print("No meetings match the filters - this might be a date/fund name mismatch issue")
-                    # Let's still try the search without pre-filtering
-                    print("WARNING: Proceeding without pre-filter to avoid empty results")
-                    valid_meeting_ids = None
+            print(f"Vector search filter: {vector_filter}")
 
             # STEP 2: Generate embedding
             embedding_service = EmbeddingService(GEMINI_API_KEY)
@@ -347,18 +336,24 @@ def perform_vector_search(
                 task_type="RETRIEVAL_QUERY"
             )
 
-            # STEP 3: Vector search on entire database
+            # STEP 3: Vector search with filter
+            search_stage = {
+                "$search": {
+                    "cosmosSearch": {
+                        "vector": query_embedding,
+                        "path": "embedding",
+                        "k": 300
+                    },
+                    "returnStoredSource": True
+                }
+            }
+
+            # Add filter to search if we have any filters
+            if vector_filter:
+                search_stage["$search"]["cosmosSearch"]["filter"] = vector_filter
+
             pipeline = [
-                {
-                    "$search": {
-                        "cosmosSearch": {
-                            "vector": query_embedding,
-                            "path": "embedding",
-                            "k": 300  # Fetch more for better filtering (like macroview)
-                        },
-                        "returnStoredSource": True
-                    }
-                },
+                search_stage,
                 {
                     "$project": {
                         "chunk_id": 1,
@@ -376,19 +371,12 @@ def perform_vector_search(
                 }
             ]
 
-            # Execute vector search
-            print(f"Performing vector search on entire database...")
-            all_results = list(chunks_collection.aggregate(pipeline))
-            print(f"Vector search returned {len(all_results)} chunks")
+            # Execute vector search with filters
+            print(f"Performing filtered vector search...")
+            results = list(chunks_collection.aggregate(pipeline))
+            print(f"Vector search returned {len(results)} chunks")
 
-            # STEP 4: Filter by meeting_id if filters were applied
-            if valid_meeting_ids is not None:
-                results = [r for r in all_results if str(r.get('meeting_id')) in valid_meeting_ids]
-                print(f"After filtering by meeting_id: {len(results)} chunks")
-            else:
-                results = all_results
-
-            # STEP 5: Limit to top_k
+            # STEP 4: Limit to top_k
             results = results[:top_k]
             print(f"Returning top {len(results)} chunks")
 
