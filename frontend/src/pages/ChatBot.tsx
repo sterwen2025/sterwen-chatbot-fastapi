@@ -585,11 +585,11 @@ const ChatBot = () => {
                         >
                           <ReactMarkdown
                             components={{
-                              p: ({node, ...props}) => <p style={{ margin: '0 0 12px 0', fontSize: 16 }} {...props} />,
-                              ul: ({node, ...props}) => <ul style={{ margin: '8px 0', paddingLeft: '20px', fontSize: 16 }} {...props} />,
-                              ol: ({node, ...props}) => <ol style={{ margin: '8px 0', paddingLeft: '20px', fontSize: 16 }} {...props} />,
-                              li: ({node, ...props}) => <li style={{ margin: '4px 0', fontSize: 16 }} {...props} />,
-                              strong: ({node, ...props}) => <strong style={{ color: '#005489', fontWeight: 600, fontSize: 16 }} {...props} />,
+                              p: ({node, ...props}: any) => <p style={{ margin: '0 0 12px 0', fontSize: 16 }} {...props} />,
+                              ul: ({node, ...props}: any) => <ul style={{ margin: '8px 0', paddingLeft: '20px', fontSize: 16 }} {...props} />,
+                              ol: ({node, ...props}: any) => <ol style={{ margin: '8px 0', paddingLeft: '20px', fontSize: 16 }} {...props} />,
+                              li: ({node, ...props}: any) => <li style={{ margin: '4px 0', fontSize: 16 }} {...props} />,
+                              strong: ({node, ...props}: any) => <strong style={{ color: '#005489', fontWeight: 600, fontSize: 16 }} {...props} />,
                               code: ({node, inline, ...props}: any) =>
                                 inline
                                   ? <code style={{ background: '#f5f5f5', padding: '2px 6px', borderRadius: 4, fontSize: 15, color: '#d63384' }} {...props} />
