@@ -13,7 +13,8 @@ WORKDIR /app/frontend
 
 # Copy frontend package files
 COPY frontend/package*.json ./
-RUN npm install
+RUN npm install && \
+    npm install --save-optional @rollup/rollup-linux-x64-gnu
 
 # Copy and build frontend
 COPY frontend/ ./
