@@ -24,7 +24,7 @@ jobs:
       - name: Log in to container registry
         uses: docker/login-action@v2
         with:
-          registry: sterwenregistry.azurecr.io
+          registry: sterwenregistry-enbfhwczd3bxcxf2.azurecr.io
           username: ${{ secrets.AZUREAPPSERVICE_CONTAINERUSERNAME_A06FD884267C4A4EB992B1A4D551284A }}
           password: ${{ secrets.AZUREAPPSERVICE_CONTAINERPASSWORD_A3DEB582AB4048EF8ABD4CB58B564370 }}
 
@@ -33,7 +33,7 @@ jobs:
         with:
           context: .
           push: true
-          tags: sterwenregistry.azurecr.io/sterwen-chatbot:${{ github.sha }}
+          tags: sterwenregistry-enbfhwczd3bxcxf2.azurecr.io/sterwen-chatbot:${{ github.sha }}
           file: ./Dockerfile
 
   deploy:
@@ -59,5 +59,5 @@ jobs:
         with:
           app-name: 'app-chatbot-g2b7g7e0avbje0bq'
           slot-name: 'Production'
-          images: 'sterwenregistry.azurecr.io/sterwen-chatbot:${{ github.sha }}'
+          images: 'sterwenregistry-enbfhwczd3bxcxf2.azurecr.io/sterwen-chatbot:${{ github.sha }}'
 
