@@ -1,7 +1,7 @@
 # Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
 # More GitHub Actions for Azure: https://github.com/Azure/actions
 
-name: Build and deploy Chatbot Frontend to Azure Web App - app-chatbot-frontend
+name: Build and deploy Chatbot (Frontend + Backend) to Azure Web App
 
 on:
   push:
@@ -9,6 +9,10 @@ on:
       - main
     paths:
       - 'frontend/**'
+      - 'backend/**'
+      - 'Dockerfile'
+      - 'nginx.conf'
+      - 'supervisord.conf'
       - '.github/workflows/deploy-frontend.yml'
   workflow_dispatch:
 
@@ -34,10 +38,10 @@ jobs:
       - name: Build and push container image to registry
         uses: docker/build-push-action@v3
         with:
-          context: ./frontend
+          context: .
           push: true
-          tags: sterwenregistry.azurecr.io/sterwen-chatbot-frontend:${{ github.sha }}
-          file: ./frontend/Dockerfile.prod
+          tags: sterwenregistry.azurecr.io/sterwen-chatbot:${{ github.sha }}
+          file: ./Dockerfile
 
   deploy:
     runs-on: ubuntu-latest
@@ -60,7 +64,7 @@ jobs:
         id: deploy-to-webapp
         uses: azure/webapps-deploy@v2
         with:
-          app-name: 'app-chatbot-frontend'
+          app-name: 'app-chatbot-g2b7g7e0avbje0bq'
           slot-name: 'Production'
-          images: 'sterwenregistry.azurecr.io/sterwen-chatbot-frontend:${{ github.sha }}'
+          images: 'sterwenregistry.azurecr.io/sterwen-chatbot:${{ github.sha }}'
 
