@@ -69,8 +69,8 @@ COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 RUN mkdir -p /var/log/nginx /var/lib/nginx /run && \
     chown -R www-data:www-data /var/log/nginx /var/lib/nginx /usr/share/nginx/html
 
-# Expose port 80
-EXPOSE 80
+# Expose port 8080 (Azure Web App requirement)
+EXPOSE 8080
 
 # Start supervisor (manages nginx + uvicorn)
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
