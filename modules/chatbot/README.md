@@ -88,3 +88,4 @@ docker run -p 80:80 \
 
 © 2025 Sterwen. All rights reserved.
 
+# Test trigger
