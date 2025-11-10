@@ -33,7 +33,9 @@ jobs:
         with:
           context: .
           push: true
-          tags: sterwenregistry-enbfhwczd3bxcxf2.azurecr.io/sterwen-chatbot:${{ github.sha }}
+          tags: |
+            sterwenregistry-enbfhwczd3bxcxf2.azurecr.io/sterwen-chatbot:${{ github.sha }}
+            sterwenregistry-enbfhwczd3bxcxf2.azurecr.io/sterwen-chatbot:latest
           file: ./Dockerfile
 
   deploy:
@@ -60,5 +62,5 @@ jobs:
           app-name: 'app-chatbot-g2b7g7e0avbje0bq'
           slot-name: 'Production'
           resource-group-name: 'sterwen-chatbot-rg'
-          images: 'sterwenregistry-enbfhwczd3bxcxf2.azurecr.io/sterwen-chatbot:${{ github.sha }}'
+          images: 'sterwenregistry-enbfhwczd3bxcxf2.azurecr.io/sterwen-chatbot:latest'
 
