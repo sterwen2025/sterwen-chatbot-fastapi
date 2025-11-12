@@ -348,7 +348,7 @@ def perform_vector_search(
             # STEP 3: Build vector search pipeline with filter inside cosmosSearch
             pipeline_start = time.time()
             if cosmos_filter:
-                print(f"Performing filtered vector search with pre-filtering...")
+                print(f"Performing ENN filtered vector search (exact match on subset)...")
                 pipeline = [
                     {
                         "$search": {
@@ -356,7 +356,8 @@ def perform_vector_search(
                                 "vector": query_embedding,
                                 "path": "embedding",
                                 "k": top_k,
-                                "filter": cosmos_filter  # Pre-filter before vector search
+                                "filter": cosmos_filter,  # Pre-filter before vector search
+                                "exact": True  # Use ENN for filtered searches - 50% faster per MS docs
                             },
                             "returnStoredSource": True
                         }
@@ -458,7 +459,7 @@ def ask_claude_with_rag(
                 start_date=start_date,
                 end_date=end_date,
                 selected_funds=selected_funds,
-                top_k=50
+                top_k=100  # Increased for more comprehensive context
             )
 
             if rag_chunks:
@@ -590,7 +591,7 @@ def ask_claude_with_rag_streaming(
                 start_date=start_date,
                 end_date=end_date,
                 selected_funds=selected_funds,
-                top_k=50
+                top_k=100  # Increased for more comprehensive context
             )
 
             if rag_chunks:
