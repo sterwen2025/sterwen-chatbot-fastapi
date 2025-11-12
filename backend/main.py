@@ -29,7 +29,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # Debug: Check if API key is loaded
 print(f"CLAUDE_API_KEY loaded: {bool(CLAUDE_API_KEY)} (length: {len(CLAUDE_API_KEY) if CLAUDE_API_KEY else 0})")
 print("=" * 80)
-print("🚀 CONTAINER VERSION: 2024-11-10-NGINX-FIXED 🚀")
+print("CONTAINER VERSION: 2024-11-10-with-debug-logs")
 print("=" * 80)
 
 app = FastAPI(title="Meeting Notes Chatbot API", version="1.0.0")
@@ -301,68 +301,64 @@ def perform_vector_search(
         List of relevant chunk documents
     """
     try:
+        import time
+
+        total_start = time.time()
+
         # Connect to MongoDB
+        db_start = time.time()
         client = MongoClient(MONGO_URI)
         try:
             db = client["Meetings"]
             chunks_collection = db["MeetingChunks"]
             meetings_collection = db["MeetingNotes"]
+            db_time = time.time() - db_start
+            print(f"[TIME] DB Connection: {db_time:.3f}s")
 
-            # STEP 1: Get valid meeting IDs from filters (like macroviews does)
-            valid_meeting_ids = None
-            if (start_date and end_date) or (selected_funds and len(selected_funds) > 0):
-                print(f"Step 1: Getting valid meeting IDs from filters...")
-                meeting_filter = {}
-
-                if start_date and end_date:
-                    start_date_obj = datetime.strptime(start_date, "%Y-%m-%d")
-                    end_date_obj = datetime.strptime(end_date, "%Y-%m-%d")
-                    meeting_filter["meeting_date"] = {
-                        "$gte": start_date_obj,
-                        "$lte": end_date_obj
-                    }
-                    print(f"Filtering by date: {start_date} to {end_date}")
-
-                if selected_funds and len(selected_funds) > 0:
-                    meeting_filter["UniqueName"] = {"$in": selected_funds}
-                    print(f"Filtering by funds: {selected_funds}")
-
-                # Query MeetingNotes collection to get valid meeting IDs
-                meeting_notes_results = list(meetings_collection.find(meeting_filter, {"ID": 1}))
-                valid_meeting_ids = [str(doc.get("ID", "")) for doc in meeting_notes_results if doc.get("ID")]
-                print(f"Found {len(valid_meeting_ids)} valid meetings")
-
-                if len(valid_meeting_ids) == 0:
-                    print("No meetings found matching filters, returning empty results")
-                    return []
-
-            # STEP 2: Generate embedding
+            # STEP 1: Generate embedding
+            embedding_start = time.time()
             embedding_service = EmbeddingService(GEMINI_API_KEY)
             print(f"Generating embedding for query: {question[:100]}...")
             query_embedding = embedding_service.generate_embedding(
                 question,
                 task_type="RETRIEVAL_QUERY"
             )
+            embedding_time = time.time() - embedding_start
+            print(f"[TIME] Embedding Generation: {embedding_time:.3f}s")
 
-            # STEP 3: Build vector search pipeline
-            # If we have meeting IDs, we need to search only within those chunks
-            if valid_meeting_ids:
-                # Use $search first (Cosmos DB requirement), then $match by meeting_id
-                print(f"Performing filtered vector search on {len(valid_meeting_ids)} meetings...")
+            # STEP 2: Build filter for cosmosSearch (pre-filtering)
+            filter_start = time.time()
+            cosmos_filter = {}
+
+            if start_date and end_date:
+                # Dates are stored as strings in ISO format (YYYY-MM-DD), use directly
+                cosmos_filter["meeting_date"] = {
+                    "$gte": start_date,
+                    "$lte": end_date
+                }
+                print(f"Filtering by date: {start_date} to {end_date}")
+
+            if selected_funds and len(selected_funds) > 0:
+                cosmos_filter["fund_name"] = {"$in": selected_funds}
+                print(f"Filtering by funds: {selected_funds}")
+
+            filter_time = time.time() - filter_start
+            print(f"[TIME] Filter Building: {filter_time:.3f}s")
+
+            # STEP 3: Build vector search pipeline with filter inside cosmosSearch
+            pipeline_start = time.time()
+            if cosmos_filter:
+                print(f"Performing filtered vector search with pre-filtering...")
                 pipeline = [
                     {
                         "$search": {
                             "cosmosSearch": {
                                 "vector": query_embedding,
                                 "path": "embedding",
-                                "k": 300  # Get more results for filtering
+                                "k": top_k,
+                                "filter": cosmos_filter  # Pre-filter before vector search
                             },
                             "returnStoredSource": True
-                        }
-                    },
-                    {
-                        "$match": {
-                            "meeting_id": {"$in": valid_meeting_ids}
                         }
                     },
                     {
@@ -390,7 +386,7 @@ def perform_vector_search(
                             "cosmosSearch": {
                                 "vector": query_embedding,
                                 "path": "embedding",
-                                "k": 300
+                                "k": top_k
                             },
                             "returnStoredSource": True
                         }
@@ -412,12 +408,22 @@ def perform_vector_search(
                     }
                 ]
 
-            results = list(chunks_collection.aggregate(pipeline))
-            print(f"Found {len(results)} results after filtering")
+            pipeline_time = time.time() - pipeline_start
+            print(f"[TIME] Pipeline Building: {pipeline_time:.3f}s")
 
-            # STEP 4: Limit to top_k
-            results = results[:top_k]
-            print(f"Returning top {len(results)} chunks")
+            # STEP 4: Execute vector search
+            search_start = time.time()
+            results = list(chunks_collection.aggregate(pipeline))
+            search_time = time.time() - search_start
+            print(f"[TIME] Vector Search Execution: {search_time:.3f}s")
+            print(f"Found {len(results)} results")
+
+            # Results are already limited by k in cosmosSearch
+            print(f"Returning {len(results)} chunks")
+
+            total_time = time.time() - total_start
+            print(f"[TIME] TOTAL TIME: {total_time:.3f}s")
+            print(f"[TIME] Breakdown - DB: {db_time:.3f}s | Embedding: {embedding_time:.3f}s | Filter: {filter_time:.3f}s | Pipeline: {pipeline_time:.3f}s | Search: {search_time:.3f}s")
 
             return results
 
@@ -603,8 +609,16 @@ def ask_claude_with_rag_streaming(
                     context += "\n---\n\n"
 
                 print(f"Added {len(rag_chunks)} RAG chunks to context")
+                # Debug: Print first chunk to verify content
+                if rag_chunks:
+                    print(f"DEBUG - First chunk text length: {len(rag_chunks[0].get('text', ''))}")
+                    print(f"DEBUG - First chunk text preview: {rag_chunks[0].get('text', '')[:200]}")
             else:
                 print("No RAG chunks found")
+
+        # Debug: Print context length being sent to Claude
+        print(f"DEBUG - Total context length: {len(context)} characters")
+        print(f"DEBUG - Context preview (first 500 chars):\n{context[:500]}")
 
         # Build messages with conversation history
         messages = []
@@ -639,6 +653,10 @@ Available data sources: {', '.join(data_sources)}
             "role": "user",
             "content": current_prompt
         })
+
+        # Debug: Print the final prompt being sent to Claude
+        print(f"DEBUG - Final prompt length: {len(current_prompt)} characters")
+        print(f"DEBUG - Final prompt preview (first 1000 chars):\n{current_prompt[:1000]}")
 
         # Send to Claude with streaming
         with client.messages.stream(

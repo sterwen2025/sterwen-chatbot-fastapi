@@ -61,7 +61,8 @@ const ChatBot = () => {
   const [statsLoading, setStatsLoading] = useState(false);
 
   // Filter states
-  const [dataSources, setDataSources] = useState<string[]>(['Meeting Notes', 'Factsheet Comments', 'Transcripts']);
+  // Note: Only Meeting Notes has RAG implementation. Factsheet Comments and Transcripts are disabled for now.
+  const [dataSources, setDataSources] = useState<string[]>(['Meeting Notes']);
   const [useDateFilter, setUseDateFilter] = useState(false);
   const [dateRange, setDateRange] = useState<[Dayjs, Dayjs]>([dayjs().subtract(6, 'month'), dayjs()]);
   const [selectedPortfolios, setSelectedPortfolios] = useState<string[]>([]);
