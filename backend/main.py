@@ -14,7 +14,7 @@ from pymongo import MongoClient
 import calendar
 import os
 import json
-import anthropic
+from google import genai
 from dotenv import load_dotenv
 from embedding_service import EmbeddingService
 
@@ -23,13 +23,15 @@ load_dotenv()
 
 # Configuration
 MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://mongodbsterwen:Genevaboy$1204@sterwendb.global.mongocluster.cosmos.azure.com/?tls=true&authMechanism=SCRAM-SHA-256&retrywrites=false&maxIdleTimeMS=120000")
-CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-# Debug: Check if API key is loaded
-print(f"CLAUDE_API_KEY loaded: {bool(CLAUDE_API_KEY)} (length: {len(CLAUDE_API_KEY) if CLAUDE_API_KEY else 0})")
+# Configure Gemini client (automatically uses GEMINI_API_KEY from environment)
+gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+
+# Debug: Check if API key is loaded (don't print the key itself)
+print(f"GEMINI_API_KEY loaded: {bool(GEMINI_API_KEY)}")
 print("=" * 80)
-print("CONTAINER VERSION: 2024-11-10-with-debug-logs")
+print("CONTAINER VERSION: 2024-11-13-gemini-2.5-flash-switch")
 print("=" * 80)
 
 app = FastAPI(title="Meeting Notes Chatbot API", version="1.0.0")
@@ -356,10 +358,8 @@ def detect_scope_change(
     if not previous_question:
         return True  # No previous question to compare
 
-    # Use Claude to determine if the topic has changed
+    # Use Gemini to determine if the topic has changed
     try:
-        client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
-
         classification_prompt = f"""You are a topic change detector for a conversational AI system.
 
 Previous question: "{previous_question}"
@@ -378,14 +378,12 @@ Guidelines:
 Respond with ONLY one word: "SAME" or "DIFFERENT"
 """
 
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=10,
-            temperature=0,
-            messages=[{"role": "user", "content": classification_prompt}]
+        response = gemini_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=classification_prompt
         )
 
-        classification = response.content[0].text.strip().upper()
+        classification = response.text.strip().upper()
 
         if classification == "DIFFERENT":
             print(f"[SCOPE] Topic changed (LLM classification: DIFFERENT)")
@@ -650,9 +648,8 @@ def ask_claude_with_rag(
     selected_funds: Optional[List[str]] = None,
     conversation_history: Optional[List[dict]] = None
 ):
-    """Send question with RAG-retrieved data to Claude."""
+    """Send question with RAG-retrieved data to Gemini."""
     try:
-        client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 
         # Prepare context
         context = "Available Data Sources:\n\n"
@@ -756,22 +753,18 @@ def ask_claude_with_rag(
         #         context += f"Transcript: {transcript.get('transcripts', '')}\n"
         #         context += "\n---\n\n"
 
-        # Build messages with conversation history
-        messages = []
+        # Build prompt with conversation history
+        full_prompt = ""
 
         if conversation_history:
+            full_prompt += "Previous conversation:\n\n"
             for item in conversation_history[-3:]:  # Last 3 exchanges
-                messages.append({
-                    "role": "user",
-                    "content": item.get('question', '')
-                })
-                messages.append({
-                    "role": "assistant",
-                    "content": item.get('answer', '')
-                })
+                full_prompt += f"User: {item.get('question', '')}\n"
+                full_prompt += f"Assistant: {item.get('answer', '')}\n\n"
+            full_prompt += "---\n\n"
 
         # Add current question with context
-        current_prompt = f"""Based on the following data sources, please answer this question: {question}
+        full_prompt += f"""Based on the following data sources, please answer this question: {question}
 
 Important instructions:
 - Use information from the provided data sources below AND from our conversation history
@@ -785,25 +778,19 @@ Available data sources: {', '.join(data_sources)}
 
 {context}"""
 
-        messages.append({
-            "role": "user",
-            "content": current_prompt
-        })
-
-        # Send to Claude (non-streaming version for backward compatibility)
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=4096,
-            messages=messages
+        # Send to Gemini (non-streaming version for backward compatibility)
+        response = gemini_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=full_prompt
         )
 
-        return response.content[0].text.strip()
+        return response.text.strip()
 
     except Exception as e:
         print(f"ERROR in ask_claude: {str(e)}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Error calling Claude API: {e}")
+        raise HTTPException(status_code=500, detail=f"Error calling Gemini API: {e}")
 
 def ask_claude_with_rag_streaming(
     question: str,
@@ -813,9 +800,8 @@ def ask_claude_with_rag_streaming(
     selected_funds: Optional[List[str]] = None,
     conversation_history: Optional[List[dict]] = None
 ):
-    """Send question with RAG-retrieved data to Claude with streaming support."""
+    """Send question with RAG-retrieved data to Gemini with streaming support."""
     try:
-        client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 
         # Prepare context (same as non-streaming version)
         context = "Available Data Sources:\n\n"
@@ -909,22 +895,18 @@ def ask_claude_with_rag_streaming(
         print(f"DEBUG - Total context length: {len(context)} characters")
         print(f"DEBUG - Context preview (first 500 chars):\n{context[:500]}")
 
-        # Build messages with conversation history
-        messages = []
+        # Build prompt with conversation history
+        full_prompt = ""
 
         if conversation_history:
+            full_prompt += "Previous conversation:\n\n"
             for item in conversation_history[-3:]:  # Last 3 exchanges
-                messages.append({
-                    "role": "user",
-                    "content": item.get('question', '')
-                })
-                messages.append({
-                    "role": "assistant",
-                    "content": item.get('answer', '')
-                })
+                full_prompt += f"User: {item.get('question', '')}\n"
+                full_prompt += f"Assistant: {item.get('answer', '')}\n\n"
+            full_prompt += "---\n\n"
 
         # Add current question with context
-        current_prompt = f"""Based on the following data sources, please answer this question: {question}
+        full_prompt += f"""Based on the following data sources, please answer this question: {question}
 
 Important instructions:
 - Use information from the provided data sources below AND from our conversation history
@@ -938,23 +920,18 @@ Available data sources: {', '.join(data_sources)}
 
 {context}"""
 
-        messages.append({
-            "role": "user",
-            "content": current_prompt
-        })
+        # Debug: Print the final prompt being sent to Gemini
+        print(f"DEBUG - Final prompt length: {len(full_prompt)} characters")
+        print(f"DEBUG - Final prompt preview (first 1000 chars):\n{full_prompt[:1000]}")
 
-        # Debug: Print the final prompt being sent to Claude
-        print(f"DEBUG - Final prompt length: {len(current_prompt)} characters")
-        print(f"DEBUG - Final prompt preview (first 1000 chars):\n{current_prompt[:1000]}")
+        # Send to Gemini with streaming
+        response = gemini_client.models.generate_content_stream(
+            model="gemini-2.5-flash",
+            contents=full_prompt
+        )
 
-        # Send to Claude with streaming
-        with client.messages.stream(
-            model="claude-sonnet-4-20250514",
-            max_tokens=4096,
-            messages=messages
-        ) as stream:
-            for text in stream.text_stream:
-                yield text
+        for chunk in response:
+            yield chunk.text
 
     except Exception as e:
         print(f"ERROR in ask_claude_streaming: {str(e)}")
