@@ -25,7 +25,8 @@ import {
   MessageOutlined,
   FilterOutlined,
   DatabaseOutlined,
-  RobotOutlined
+  RobotOutlined,
+  LoadingOutlined
 } from '@ant-design/icons';
 import { API_ENDPOINTS } from '../config/api';
 import dayjs, { Dayjs } from 'dayjs';
@@ -59,6 +60,7 @@ const ChatBot = () => {
   const [conversation, setConversation] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [statsLoading, setStatsLoading] = useState(false);
+  const [searchStatus, setSearchStatus] = useState<string>(''); // Search process status
 
   // Filter states
   // Note: Only Meeting Notes has RAG implementation. Factsheet Comments and Transcripts are disabled for now.
@@ -176,6 +178,7 @@ const ChatBot = () => {
     }
 
     setLoading(true);
+    setSearchStatus(''); // Start with no status, wait for backend signal
     const currentQuestion = question;
     setQuestion(''); // Clear input immediately
 
@@ -226,7 +229,20 @@ const ChatBot = () => {
             try {
               const jsonData = JSON.parse(line.slice(6));
 
+              // Handle search status event
+              if (jsonData.hasOwnProperty('searching')) {
+                if (jsonData.searching) {
+                  setSearchStatus('Finding relevant information...');
+                } else {
+                  setSearchStatus('');
+                }
+              }
+
               if (jsonData.content) {
+                // Clear search status when first content arrives
+                if (searchStatus) {
+                  setSearchStatus('');
+                }
                 accumulatedAnswer += jsonData.content;
                 // Update the last message in conversation with accumulated answer
                 setConversation(prev => {
@@ -262,6 +278,7 @@ const ChatBot = () => {
       setConversation(prev => prev.slice(0, -1));
     } finally {
       setLoading(false);
+      setSearchStatus(''); // Clear search status
     }
   };
 
@@ -656,6 +673,52 @@ const ChatBot = () => {
                     </div>
                   </div>
                 ))}
+
+                {/* Search Status Indicator */}
+                {searchStatus && (
+                  <div style={{
+                    display: 'flex',
+                    justifyContent: 'flex-start',
+                    alignItems: 'flex-start'
+                  }}>
+                    <div style={{
+                      width: 38,
+                      height: 38,
+                      borderRadius: '50%',
+                      background: 'linear-gradient(135deg, #f0f4f8 0%, #e5ecf3 100%)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      marginRight: 12,
+                      flexShrink: 0,
+                      border: '1px solid #e1e4e8',
+                      boxShadow: '0 2px 4px rgba(0,0,0,0.04)'
+                    }}>
+                      <RobotOutlined style={{ fontSize: 18, color: '#0066a1' }} />
+                    </div>
+                    <div style={{
+                      maxWidth: 'calc(80% - 50px)',
+                      background: '#ffffff',
+                      padding: '18px 22px',
+                      borderRadius: '6px 20px 20px 20px',
+                      boxShadow: '0 4px 12px rgba(0,0,0,0.06), 0 2px 4px rgba(0,0,0,0.03)',
+                      border: '1px solid #e8eaed',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 12
+                    }}>
+                      <LoadingOutlined style={{ fontSize: 16, color: '#0066a1' }} />
+                      <Text style={{
+                        color: '#6b7280',
+                        fontSize: 15,
+                        fontStyle: 'italic'
+                      }}>
+                        {searchStatus}
+                      </Text>
+                    </div>
+                  </div>
+                )}
+
                 <div ref={messagesEndRef} />
               </Space>
             )}
