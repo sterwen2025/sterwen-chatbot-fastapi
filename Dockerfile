@@ -64,6 +64,10 @@ RUN rm -f /etc/nginx/sites-enabled/default && \
 # Copy supervisor configuration
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
+# Copy entrypoint script
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 # Create nginx directories and set permissions
 RUN mkdir -p /var/log/nginx /var/lib/nginx /run && \
     chown -R www-data:www-data /var/log/nginx /var/lib/nginx /usr/share/nginx/html
@@ -71,5 +75,5 @@ RUN mkdir -p /var/log/nginx /var/lib/nginx /run && \
 # Expose port 80
 EXPOSE 80
 
-# Start supervisor (manages nginx + uvicorn)
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+# Start using entrypoint script for debugging
+CMD ["/entrypoint.sh"]
