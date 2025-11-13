@@ -1,28 +1,31 @@
-#!/bin/bash
+#!/bin/sh
+set -x
 
-# Unbuffer output
-exec 1>&1
-exec 2>&2
+# Try to write to a log file in a known location
+echo "ENTRYPOINT STARTING" > /tmp/entrypoint.log 2>&1
+date >> /tmp/entrypoint.log 2>&1
 
-echo "=== ENTRYPOINT SCRIPT STARTING ===" >&2
+# Also try stdout/stderr
 echo "=== ENTRYPOINT SCRIPT STARTING ==="
+echo "=== ENTRYPOINT SCRIPT STARTING ===" >&2
 
-echo "Testing basic output..." >&2
-echo "Testing basic output..."
+# Check if bash exists, otherwise use sh
+if command -v bash >/dev/null 2>&1; then
+    echo "Bash found" >> /tmp/entrypoint.log
+else
+    echo "Bash NOT found, using sh" >> /tmp/entrypoint.log
+fi
 
-echo "Checking Python..." >&2
-python --version 2>&1 || echo "Python check failed"
+# Basic system info
+echo "Python: $(python --version 2>&1)" >> /tmp/entrypoint.log
+echo "Supervisord: $(which supervisord 2>&1)" >> /tmp/entrypoint.log
+echo "PWD: $(pwd)" >> /tmp/entrypoint.log
 
-echo "Checking Supervisord..." >&2
-which supervisord 2>&1 || echo "Supervisord not found"
+# Check for env vars
+env | grep -E "CLAUDE|GEMINI|MONGO|PORT" >> /tmp/entrypoint.log 2>&1 || echo "No env vars" >> /tmp/entrypoint.log
 
-echo "Working directory: $(pwd)" >&2
-echo "Working directory: $(pwd)"
-
-echo "Checking environment variables..." >&2
-env | grep -E "CLAUDE|GEMINI|MONGO|PORT" || echo "No relevant env vars found"
-
-echo "=== STARTING SUPERVISORD ===" >&2
 echo "=== STARTING SUPERVISORD ==="
+echo "Starting supervisord..." >> /tmp/entrypoint.log
 
+# Start supervisord
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
