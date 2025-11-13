@@ -7,14 +7,13 @@
 # ------------------------------------------------------------------------------
 # STAGE 1: Build Frontend
 # ------------------------------------------------------------------------------
-FROM node:22-slim AS frontend-builder
+FROM node:22-alpine AS frontend-builder
 
 WORKDIR /app/frontend
 
 # Copy frontend package files
 COPY frontend/package*.json ./
-RUN npm install && \
-    npm install --save-optional @rollup/rollup-linux-x64-gnu
+RUN npm install
 
 # Copy and build frontend
 COPY frontend/ ./
@@ -58,7 +57,9 @@ COPY --from=frontend-builder /app/frontend/dist /usr/share/nginx/html
 # Copy nginx configuration
 COPY nginx.conf /etc/nginx/sites-available/default
 RUN rm -f /etc/nginx/sites-enabled/default && \
-    ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/
+    ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/ && \
+    # Disable daemon mode for supervisor
+    echo "daemon off;" >> /etc/nginx/nginx.conf
 
 # Copy supervisor configuration
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
@@ -67,8 +68,8 @@ COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 RUN mkdir -p /var/log/nginx /var/lib/nginx /run && \
     chown -R www-data:www-data /var/log/nginx /var/lib/nginx /usr/share/nginx/html
 
-# Expose port 8080 (Azure Web App requirement)
-EXPOSE 8080
+# Expose port 80
+EXPOSE 80
 
 # Start supervisor (manages nginx + uvicorn)
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

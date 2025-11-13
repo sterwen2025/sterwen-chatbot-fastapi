@@ -278,6 +278,213 @@ def get_filtered_transcripts(start_date: Optional[str], end_date: Optional[str],
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting transcripts: {e}")
 
+# ====================================================================================
+# SMART RAG STRATEGY
+# ====================================================================================
+
+# Global cache for RAG results (in-memory, per-session)
+rag_cache = {}
+
+def classify_intent(question: str, conversation_history: Optional[List[dict]] = None) -> str:
+    """
+    Classify user intent using rule-based patterns.
+
+    Returns:
+        'NO_RAG': Transform/analyze existing context
+        'NEW_QUERY': Requires new vector search
+    """
+    question_lower = question.lower().strip()
+
+    # NO_RAG patterns: Transform/analyze existing context
+    transform_patterns = [
+        'summarize', 'summary', 'list', 'compare', 'contrast',
+        'tell me more', 'explain', 'elaborate', 'what do you mean',
+        'can you clarify', 'in other words', 'why', 'how',
+        'what about the', 'regarding the', 'about the above'
+    ]
+
+    # Check if question asks to transform existing context
+    for pattern in transform_patterns:
+        if pattern in question_lower:
+            # If conversation history is short, we need new context
+            if not conversation_history or len(conversation_history) < 2:
+                return 'NEW_QUERY'
+            return 'NO_RAG'
+
+    # Default: assume new query that needs RAG
+    return 'NEW_QUERY'
+
+
+def detect_scope_change(
+    question: str,
+    start_date: Optional[str],
+    end_date: Optional[str],
+    selected_funds: Optional[List[str]],
+    previous_scope: Optional[dict]
+) -> bool:
+    """
+    Detect if the query scope has changed (time, entity, topic).
+    Uses LLM-based intent detection to determine topic changes.
+
+    Returns:
+        True if scope changed, False if scope is the same
+    """
+    if previous_scope is None:
+        return True  # No previous scope, treat as changed
+
+    # Extract filter fields from previous scope for comparison
+    previous_filters = {
+        'start_date': previous_scope.get('start_date'),
+        'end_date': previous_scope.get('end_date'),
+        'funds': previous_scope.get('funds')
+    }
+
+    current_filters = {
+        'start_date': start_date,
+        'end_date': end_date,
+        'funds': sorted(selected_funds) if selected_funds else None
+    }
+
+    # Check if filters changed
+    if current_filters != previous_filters:
+        print(f"[SCOPE] Filters changed: {previous_filters} -> {current_filters}")
+        return True
+
+    # Check if topic changed using LLM-based classification
+    previous_question = previous_scope.get('question', '')
+
+    if not previous_question:
+        return True  # No previous question to compare
+
+    # Use Claude to determine if the topic has changed
+    try:
+        client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+
+        classification_prompt = f"""You are a topic change detector for a conversational AI system.
+
+Previous question: "{previous_question}"
+Current question: "{question}"
+
+Task: Determine if these two questions are about the SAME topic or DIFFERENT topics.
+
+Guidelines:
+- SAME topic: Follow-up questions, requests for more details, clarifications, or elaborations about the same subject/entity
+  Examples: "Tell me about AQR" → "More details" (SAME)
+               "What is their strategy?" → "Can you elaborate?" (SAME)
+- DIFFERENT topic: Questions about different entities, companies, funds, or completely different subjects
+  Examples: "Tell me about AQR" → "Tell me about FengHe" (DIFFERENT)
+               "What is AQR's strategy?" → "Tell me about Citadel" (DIFFERENT)
+
+Respond with ONLY one word: "SAME" or "DIFFERENT"
+"""
+
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=10,
+            temperature=0,
+            messages=[{"role": "user", "content": classification_prompt}]
+        )
+
+        classification = response.content[0].text.strip().upper()
+
+        if classification == "DIFFERENT":
+            print(f"[SCOPE] Topic changed (LLM classification: DIFFERENT)")
+            print(f"[SCOPE] Previous: '{previous_question[:60]}...'")
+            print(f"[SCOPE] Current:  '{question[:60]}...'")
+            return True
+        else:
+            print(f"[SCOPE] Same topic (LLM classification: {classification})")
+            return False
+
+    except Exception as e:
+        print(f"[SCOPE] Error in LLM topic classification: {e}")
+        # Fallback: assume topic changed if classification fails
+        return True
+
+
+def get_rag_strategy(
+    question: str,
+    start_date: Optional[str],
+    end_date: Optional[str],
+    selected_funds: Optional[List[str]],
+    conversation_history: Optional[List[dict]] = None
+) -> str:
+    """
+    Determine RAG strategy based on intent and scope.
+
+    Returns:
+        'NO_RAG': Skip vector search, reuse context
+        'RAG_REUSE': Use cached RAG results
+        'RAG_NEW_QUERY': Perform new vector search
+    """
+    # Step 1: Classify intent
+    intent = classify_intent(question, conversation_history)
+
+    if intent == 'NO_RAG':
+        print(f"[RAG STRATEGY] NO_RAG - Transform/analyze intent detected")
+        return 'NO_RAG'
+
+    # Step 2: Check scope change
+    cache_key = f"{start_date}_{end_date}_{sorted(selected_funds) if selected_funds else 'all'}"
+    previous_scope = rag_cache.get(cache_key, {}).get('scope')
+
+    scope_changed = detect_scope_change(
+        question,
+        start_date,
+        end_date,
+        selected_funds,
+        previous_scope
+    )
+
+    if scope_changed:
+        print(f"[RAG STRATEGY] RAG_NEW_QUERY - Scope changed or first query")
+        return 'RAG_NEW_QUERY'
+    else:
+        print(f"[RAG STRATEGY] RAG_REUSE - Scope unchanged, reusing cached results")
+        return 'RAG_REUSE'
+
+
+def cache_rag_results(
+    question: str,
+    start_date: Optional[str],
+    end_date: Optional[str],
+    selected_funds: Optional[List[str]],
+    rag_chunks: List[dict]
+):
+    """Cache RAG results for reuse."""
+    cache_key = f"{start_date}_{end_date}_{sorted(selected_funds) if selected_funds else 'all'}"
+    rag_cache[cache_key] = {
+        'scope': {
+            'question': question,  # Store question for LLM-based topic detection
+            'start_date': start_date,
+            'end_date': end_date,
+            'funds': sorted(selected_funds) if selected_funds else None
+        },
+        'chunks': rag_chunks,
+        'timestamp': datetime.now()
+    }
+    print(f"[RAG CACHE] Cached {len(rag_chunks)} chunks for key: {cache_key}")
+
+
+def get_cached_rag_results(
+    start_date: Optional[str],
+    end_date: Optional[str],
+    selected_funds: Optional[List[str]]
+) -> Optional[List[dict]]:
+    """Retrieve cached RAG results."""
+    cache_key = f"{start_date}_{end_date}_{sorted(selected_funds) if selected_funds else 'all'}"
+    cached = rag_cache.get(cache_key)
+
+    if cached:
+        print(f"[RAG CACHE] Retrieved {len(cached['chunks'])} cached chunks")
+        return cached['chunks']
+
+    return None
+
+# ====================================================================================
+# VECTOR SEARCH
+# ====================================================================================
+
 def perform_vector_search(
     question: str,
     data_sources: List[str],
@@ -450,17 +657,48 @@ def ask_claude_with_rag(
         # Prepare context
         context = "Available Data Sources:\n\n"
 
-        # Use RAG for meeting notes
+        # Use RAG for meeting notes with smart strategy
         if "Meeting Notes" in data_sources:
-            print("Using RAG vector search for meeting notes...")
-            rag_chunks = perform_vector_search(
+            # Determine RAG strategy
+            strategy = get_rag_strategy(
                 question=question,
-                data_sources=data_sources,
                 start_date=start_date,
                 end_date=end_date,
                 selected_funds=selected_funds,
-                top_k=100  # Increased for more comprehensive context
+                conversation_history=conversation_history
             )
+
+            if strategy == 'NO_RAG':
+                # Skip RAG, reuse conversation context
+                print("[RAG] Skipping vector search - using conversation context")
+                rag_chunks = []
+            elif strategy == 'RAG_REUSE':
+                # Reuse cached RAG results
+                rag_chunks = get_cached_rag_results(start_date, end_date, selected_funds)
+                if not rag_chunks:
+                    # Cache miss, perform new search
+                    print("[RAG] Cache miss, performing new vector search...")
+                    rag_chunks = perform_vector_search(
+                        question=question,
+                        data_sources=data_sources,
+                        start_date=start_date,
+                        end_date=end_date,
+                        selected_funds=selected_funds,
+                        top_k=100
+                    )
+                    cache_rag_results(question, start_date, end_date, selected_funds, rag_chunks)
+            else:  # RAG_NEW_QUERY
+                # Perform new vector search
+                print("[RAG] Performing new vector search...")
+                rag_chunks = perform_vector_search(
+                    question=question,
+                    data_sources=data_sources,
+                    start_date=start_date,
+                    end_date=end_date,
+                    selected_funds=selected_funds,
+                    top_k=100
+                )
+                cache_rag_results(question, start_date, end_date, selected_funds, rag_chunks)
 
             if rag_chunks:
                 context += "=== MEETING NOTES (RAG Retrieved) ===\n\n"
@@ -582,17 +820,64 @@ def ask_claude_with_rag_streaming(
         # Prepare context (same as non-streaming version)
         context = "Available Data Sources:\n\n"
 
-        # Use RAG for meeting notes
+        # Track if we're performing vector search
+        is_searching = False
+
+        # Use RAG for meeting notes with smart strategy
         if "Meeting Notes" in data_sources:
-            print("Using RAG vector search for meeting notes...")
-            rag_chunks = perform_vector_search(
+            # Determine RAG strategy
+            strategy = get_rag_strategy(
                 question=question,
-                data_sources=data_sources,
                 start_date=start_date,
                 end_date=end_date,
                 selected_funds=selected_funds,
-                top_k=100  # Increased for more comprehensive context
+                conversation_history=conversation_history
             )
+
+            if strategy == 'NO_RAG':
+                # Skip RAG, reuse conversation context
+                print("[RAG] Skipping vector search - using conversation context")
+                rag_chunks = []
+                # Send status: not searching
+                yield ('STATUS', False)
+            elif strategy == 'RAG_REUSE':
+                # Reuse cached RAG results
+                rag_chunks = get_cached_rag_results(start_date, end_date, selected_funds)
+                if not rag_chunks:
+                    # Cache miss, perform new search
+                    print("[RAG] Cache miss, performing new vector search...")
+                    # Send status: searching
+                    yield ('STATUS', True)
+                    rag_chunks = perform_vector_search(
+                        question=question,
+                        data_sources=data_sources,
+                        start_date=start_date,
+                        end_date=end_date,
+                        selected_funds=selected_funds,
+                        top_k=100
+                    )
+                    # Search complete, hide status
+                    yield ('STATUS', False)
+                    cache_rag_results(question, start_date, end_date, selected_funds, rag_chunks)
+                else:
+                    # Cache hit, no searching needed
+                    yield ('STATUS', False)
+            else:  # RAG_NEW_QUERY
+                # Perform new vector search
+                print("[RAG] Performing new vector search...")
+                # Send status: searching
+                yield ('STATUS', True)
+                rag_chunks = perform_vector_search(
+                    question=question,
+                    data_sources=data_sources,
+                    start_date=start_date,
+                    end_date=end_date,
+                    selected_funds=selected_funds,
+                    top_k=100
+                )
+                # Search complete, hide status
+                yield ('STATUS', False)
+                cache_rag_results(question, start_date, end_date, selected_funds, rag_chunks)
 
             if rag_chunks:
                 context += "=== MEETING NOTES (RAG Retrieved) ===\n\n"
@@ -616,6 +901,9 @@ def ask_claude_with_rag_streaming(
                     print(f"DEBUG - First chunk text preview: {rag_chunks[0].get('text', '')[:200]}")
             else:
                 print("No RAG chunks found")
+        else:
+            # No Meeting Notes data source selected, no RAG
+            yield ('STATUS', False)
 
         # Debug: Print context length being sent to Claude
         print(f"DEBUG - Total context length: {len(context)} characters")
@@ -918,7 +1206,7 @@ async def ask_question_stream(request: ChatRequest):
 
         def generate():
             try:
-                for text_chunk in ask_claude_with_rag_streaming(
+                for item in ask_claude_with_rag_streaming(
                     question=request.question,
                     data_sources=request.data_sources,
                     start_date=request.start_date,
@@ -926,8 +1214,13 @@ async def ask_question_stream(request: ChatRequest):
                     selected_funds=request.selected_funds,
                     conversation_history=request.conversation_history
                 ):
-                    # Send each chunk as Server-Sent Events format
-                    yield f"data: {json.dumps({'content': text_chunk})}\n\n"
+                    # Check if it's a status tuple or text content
+                    if isinstance(item, tuple) and item[0] == 'STATUS':
+                        # Send search status event
+                        yield f"data: {json.dumps({'searching': item[1]})}\n\n"
+                    else:
+                        # Send each text chunk as Server-Sent Events format
+                        yield f"data: {json.dumps({'content': item})}\n\n"
 
                 # Send done signal
                 yield f"data: {json.dumps({'done': True})}\n\n"
