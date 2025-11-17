@@ -111,7 +111,8 @@ def perform_web_search(query: str, max_results: int = 5):
     try:
         print(f"[WEB SEARCH] Searching for: {query}")
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=max_results))
+            # Use region='us-en' to get English results from US region
+            results = list(ddgs.text(query, region='us-en', max_results=max_results))
             formatted_results = []
             for result in results:
                 formatted_results.append({
