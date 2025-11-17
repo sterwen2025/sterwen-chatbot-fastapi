@@ -5,3 +5,4 @@ python-dotenv==1.0.1
 pydantic==2.10.3
 google-genai>=0.7.0
 langchain-text-splitters>=0.2.0
+duckduckgo-search>=6.3.4
