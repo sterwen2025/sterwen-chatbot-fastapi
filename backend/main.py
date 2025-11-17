@@ -18,6 +18,7 @@ import uuid
 from google import genai
 from dotenv import load_dotenv
 from embedding_service import EmbeddingService
+from duckduckgo_search import DDGS
 
 # Load environment variables
 load_dotenv()
@@ -101,6 +102,28 @@ def get_user_identifier(request: Request, session_id: Optional[str] = None) -> s
     else:
         # Generate new session ID for anonymous users
         return f"session_{str(uuid.uuid4())}"
+
+def perform_web_search(query: str, max_results: int = 5):
+    """
+    Perform web search using DuckDuckGo.
+    Returns list of search results with title, snippet, and URL.
+    """
+    try:
+        print(f"[WEB SEARCH] Searching for: {query}")
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=max_results))
+            formatted_results = []
+            for result in results:
+                formatted_results.append({
+                    "title": result.get("title", ""),
+                    "snippet": result.get("body", ""),
+                    "url": result.get("href", "")
+                })
+            print(f"[WEB SEARCH] Found {len(formatted_results)} results")
+            return formatted_results
+    except Exception as e:
+        print(f"[WEB SEARCH] Error: {e}")
+        return []
 
 def normalize_date_to_month_end(date_input):
     """Convert any date to the last day of its month, except for current month."""
@@ -805,10 +828,13 @@ def ask_claude_with_rag(
 Important instructions:
 - Use information from the provided data sources below AND from our conversation history
 - If the question refers to something mentioned earlier in our conversation, you can use that information
-- If you cannot find relevant information in either the data or conversation history, say so clearly
-- Cite specific sources when possible (meeting dates, report dates, fund names)
+- **ALWAYS present all Web Search Results when they are provided in the data sources section**
+- When web search results are provided, present them as your answer - do not say there is no information
+- List web search results with their titles and clickable URLs
+- Do NOT add disclaimers about missing information if web search results are available
+- Cite specific sources when possible (meeting dates, report dates, fund names, URLs for web search results)
 - Be concise and factual
-- Distinguish between meeting notes, monthly factsheet comments, and meeting transcripts in your response
+- Distinguish between meeting notes, monthly factsheet comments, meeting transcripts, and web search results in your response
 
 Available data sources: {', '.join(data_sources)}
 
@@ -927,6 +953,25 @@ def ask_claude_with_rag_streaming(
             # No Meeting Notes data source selected, no RAG
             yield ('STATUS', False)
 
+        # Add Web Search results if selected
+        if "Web Search" in data_sources:
+            print("[WEB SEARCH] Performing web search...")
+            yield ('STATUS', True)
+            web_results = perform_web_search(question, max_results=5)
+            yield ('STATUS', False)
+
+            if web_results:
+                context += "\n=== WEB SEARCH RESULTS ===\n\n"
+                for idx, result in enumerate(web_results, 1):
+                    context += f"{idx}. {result['title']}\n"
+                    context += f"   URL: {result['url']}\n"
+                    context += f"   {result['snippet']}\n\n"
+                    print(f"[WEB SEARCH] Result {idx}: {result['title'][:100]}")
+                print(f"Added {len(web_results)} web search results to context")
+                print(f"[WEB SEARCH] Context preview:\n{context[context.find('=== WEB SEARCH RESULTS ==='):context.find('=== WEB SEARCH RESULTS ===')+500]}")
+            else:
+                print("No web search results found")
+
         # Debug: Print context length being sent to Claude
         print(f"DEBUG - Total context length: {len(context)} characters")
         print(f"DEBUG - Context preview (first 500 chars):\n{context[:500]}")
@@ -947,10 +992,13 @@ def ask_claude_with_rag_streaming(
 Important instructions:
 - Use information from the provided data sources below AND from our conversation history
 - If the question refers to something mentioned earlier in our conversation, you can use that information
-- If you cannot find relevant information in either the data or conversation history, say so clearly
-- Cite specific sources when possible (meeting dates, report dates, fund names)
+- **ALWAYS present all Web Search Results when they are provided in the data sources section**
+- When web search results are provided, present them as your answer - do not say there is no information
+- List web search results with their titles and clickable URLs
+- Do NOT add disclaimers about missing information if web search results are available
+- Cite specific sources when possible (meeting dates, report dates, fund names, URLs for web search results)
 - Be concise and factual
-- Distinguish between meeting notes, monthly factsheet comments, and meeting transcripts in your response
+- Distinguish between meeting notes, monthly factsheet comments, meeting transcripts, and web search results in your response
 
 Available data sources: {', '.join(data_sources)}
 

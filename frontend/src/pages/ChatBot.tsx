@@ -28,7 +28,9 @@ import {
   RobotOutlined,
   LoadingOutlined,
   PlusOutlined,
-  HistoryOutlined
+  HistoryOutlined,
+  SearchOutlined,
+  GlobalOutlined
 } from '@ant-design/icons';
 import { API_ENDPOINTS } from '../config/api';
 import dayjs, { Dayjs } from 'dayjs';
@@ -85,6 +87,9 @@ const ChatBot = () => {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+
+  // Web search toggle
+  const [useWebSearch, setUseWebSearch] = useState(false);
 
   // Filter states
   // Note: Only Meeting Notes has RAG implementation. Factsheet Comments and Transcripts are disabled for now.
@@ -319,11 +324,14 @@ const ChatBot = () => {
     const currentQuestion = question;
     setQuestion(''); // Clear input immediately
 
+    // Build data sources array including web search if enabled
+    const effectiveDataSources = useWebSearch ? [...dataSources, 'Web Search'] : dataSources;
+
     // Create a temporary message with empty answer for streaming
     const tempMessage: ChatMessage = {
       question: currentQuestion,
       answer: '',
-      sources: dataSources,
+      sources: effectiveDataSources,
       timestamp: new Date()
     };
 
@@ -335,7 +343,7 @@ const ChatBot = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           question: currentQuestion,
-          data_sources: dataSources,
+          data_sources: effectiveDataSources,
           start_date: useDateFilter ? dateRange[0].format('YYYY-MM-DD') : null,
           end_date: useDateFilter ? dateRange[1].format('YYYY-MM-DD') : null,
           selected_funds: selectedFunds.length > 0 ? selectedFunds : null,
@@ -938,6 +946,7 @@ const ChatBot = () => {
                               ol: ({node, ...props}: any) => <ol style={{ margin: '8px 0', paddingLeft: '20px', fontSize: 16 }} {...props} />,
                               li: ({node, ...props}: any) => <li style={{ margin: '4px 0', fontSize: 16 }} {...props} />,
                               strong: ({node, ...props}: any) => <strong style={{ color: '#005489', fontWeight: 600, fontSize: 16 }} {...props} />,
+                              a: ({node, ...props}: any) => <a style={{ color: '#005489', textDecoration: 'underline' }} target="_blank" rel="noopener noreferrer" {...props} />,
                               code: ({node, inline, ...props}: any) =>
                                 inline
                                   ? <code style={{ background: '#f5f5f5', padding: '2px 6px', borderRadius: 4, fontSize: 15, color: '#d63384' }} {...props} />
@@ -1010,6 +1019,30 @@ const ChatBot = () => {
             boxShadow: '0 -4px 16px rgba(0,0,0,0.04)'
           }}>
             <div style={{ maxWidth: 900, margin: '0 auto' }}>
+              {/* Web Search Toggle */}
+              <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Button
+                  size="small"
+                  icon={<GlobalOutlined />}
+                  onClick={() => setUseWebSearch(!useWebSearch)}
+                  style={{
+                    borderRadius: 8,
+                    border: useWebSearch ? '1px solid #005489' : '1px solid #d1d5db',
+                    background: useWebSearch ? '#e6f2f8' : 'transparent',
+                    color: useWebSearch ? '#005489' : '#6b7280',
+                    fontSize: 13,
+                    height: 28,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    fontWeight: useWebSearch ? 500 : 400,
+                    transition: 'all 0.2s'
+                  }}
+                >
+                  Search the web
+                </Button>
+              </div>
+
               <div style={{
                 background: '#ffffff',
                 border: '2px solid #e1e4e8',
