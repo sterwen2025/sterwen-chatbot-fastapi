@@ -4,7 +4,7 @@ Meeting Notes & Fund Comments Chatbot API
 FastAPI backend for intelligent Q&A system with meeting notes, factsheet comments, and transcripts
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -14,6 +14,7 @@ from pymongo import MongoClient
 import calendar
 import os
 import json
+import uuid
 from google import genai
 from dotenv import load_dotenv
 from embedding_service import EmbeddingService
@@ -65,7 +66,41 @@ class FilterStats(BaseModel):
     transcripts_count: int
     total_count: int
 
+class ChatHistoryMessage(BaseModel):
+    question: str
+    answer: str
+    sources: List[str]
+    timestamp: str
+
+class SaveChatRequest(BaseModel):
+    session_id: Optional[str] = None
+    conversation_id: Optional[str] = None
+    message: ChatHistoryMessage
+
+class CreateConversationRequest(BaseModel):
+    session_id: Optional[str] = None
+    title: Optional[str] = "New Conversation"
+
 # Helper Functions
+def get_user_identifier(request: Request, session_id: Optional[str] = None) -> str:
+    """
+    Get user identifier from Azure AD authentication or session ID.
+    Priority: Azure AD user > session_id parameter > generated UUID
+    """
+    # Try to get Azure AD user from App Service Authentication headers
+    azure_user_id = request.headers.get("X-MS-CLIENT-PRINCIPAL-ID")
+    azure_user_name = request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME")
+
+    if azure_user_id:
+        return f"azure_{azure_user_id}"
+    elif azure_user_name:
+        return f"azure_{azure_user_name}"
+    elif session_id:
+        return f"session_{session_id}"
+    else:
+        # Generate new session ID for anonymous users
+        return f"session_{str(uuid.uuid4())}"
+
 def normalize_date_to_month_end(date_input):
     """Convert any date to the last day of its month, except for current month."""
     if not date_input or date_input in ["", "None", None]:
@@ -1217,6 +1252,189 @@ async def ask_question_stream(request: ChatRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing streaming question: {e}")
+
+@app.post("/api/chat/conversations/create")
+async def create_conversation(request: Request, create_request: CreateConversationRequest):
+    """Create a new conversation."""
+    try:
+        user_id = get_user_identifier(request, create_request.session_id)
+        conversation_id = str(uuid.uuid4())
+
+        client = MongoClient(MONGO_URI)
+        try:
+            db = client["Chatbot"]
+            collection = db["Conversations"]
+
+            conversation_data = {
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "title": create_request.title,
+                "messages": [],
+                "created_at": datetime.utcnow(),
+                "updated_at": datetime.utcnow()
+            }
+
+            collection.insert_one(conversation_data)
+
+            return {
+                "success": True,
+                "conversation_id": conversation_id,
+                "title": create_request.title
+            }
+        finally:
+            client.close()
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating conversation: {e}")
+
+@app.get("/api/chat/conversations")
+async def list_conversations(request: Request, session_id: Optional[str] = None):
+    """List all conversations for the current user."""
+    try:
+        user_id = get_user_identifier(request, session_id)
+
+        client = MongoClient(MONGO_URI)
+        try:
+            db = client["Chatbot"]
+            collection = db["Conversations"]
+
+            # Find all conversations for this user, sorted by updated_at
+            conversations = list(collection.find(
+                {"user_id": user_id},
+                {"_id": 0, "conversation_id": 1, "title": 1, "created_at": 1, "updated_at": 1, "messages": 1}
+            ).sort("updated_at", -1))
+
+            # Convert datetime objects to strings and add message count
+            for conv in conversations:
+                conv["created_at"] = conv["created_at"].isoformat() if "created_at" in conv else None
+                conv["updated_at"] = conv["updated_at"].isoformat() if "updated_at" in conv else None
+                conv["message_count"] = len(conv.get("messages", []))
+                # Remove messages from list view for performance
+                conv.pop("messages", None)
+
+            return {
+                "success": True,
+                "conversations": conversations
+            }
+        finally:
+            client.close()
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error listing conversations: {e}")
+
+@app.get("/api/chat/conversations/{conversation_id}")
+async def get_conversation(request: Request, conversation_id: str, session_id: Optional[str] = None):
+    """Get a specific conversation."""
+    try:
+        user_id = get_user_identifier(request, session_id)
+
+        client = MongoClient(MONGO_URI)
+        try:
+            db = client["Chatbot"]
+            collection = db["Conversations"]
+
+            conversation = collection.find_one(
+                {"conversation_id": conversation_id, "user_id": user_id},
+                {"_id": 0}
+            )
+
+            if conversation:
+                # Convert datetime objects to strings
+                conversation["created_at"] = conversation["created_at"].isoformat() if "created_at" in conversation else None
+                conversation["updated_at"] = conversation["updated_at"].isoformat() if "updated_at" in conversation else None
+
+                return {
+                    "success": True,
+                    "conversation": conversation
+                }
+            else:
+                raise HTTPException(status_code=404, detail="Conversation not found")
+        finally:
+            client.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving conversation: {e}")
+
+@app.post("/api/chat/conversations/{conversation_id}/messages")
+async def save_message(request: Request, conversation_id: str, chat_request: SaveChatRequest):
+    """Save a message to a conversation."""
+    try:
+        user_id = get_user_identifier(request, chat_request.session_id)
+
+        client = MongoClient(MONGO_URI)
+        try:
+            db = client["Chatbot"]
+            collection = db["Conversations"]
+
+            message_data = {
+                "question": chat_request.message.question,
+                "answer": chat_request.message.answer,
+                "sources": chat_request.message.sources,
+                "timestamp": chat_request.message.timestamp
+            }
+
+            # Update the conversation, set title from first question if still "New Conversation"
+            update_doc = {
+                "$push": {"messages": message_data},
+                "$set": {"updated_at": datetime.utcnow()}
+            }
+
+            # Get current conversation to check title
+            conversation = collection.find_one({"conversation_id": conversation_id, "user_id": user_id})
+            if conversation and conversation.get("title") == "New Conversation" and len(conversation.get("messages", [])) == 0:
+                # Generate title from first question
+                title = chat_request.message.question[:50] + "..." if len(chat_request.message.question) > 50 else chat_request.message.question
+                update_doc["$set"]["title"] = title
+
+            result = collection.update_one(
+                {"conversation_id": conversation_id, "user_id": user_id},
+                update_doc
+            )
+
+            if result.matched_count == 0:
+                raise HTTPException(status_code=404, detail="Conversation not found")
+
+            return {
+                "success": True,
+                "message": "Message saved successfully"
+            }
+        finally:
+            client.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error saving message: {e}")
+
+@app.delete("/api/chat/conversations/{conversation_id}")
+async def delete_conversation(request: Request, conversation_id: str, session_id: Optional[str] = None):
+    """Delete a conversation."""
+    try:
+        user_id = get_user_identifier(request, session_id)
+
+        client = MongoClient(MONGO_URI)
+        try:
+            db = client["Chatbot"]
+            collection = db["Conversations"]
+
+            result = collection.delete_one({"conversation_id": conversation_id, "user_id": user_id})
+
+            if result.deleted_count == 0:
+                raise HTTPException(status_code=404, detail="Conversation not found")
+
+            return {
+                "success": True,
+                "message": "Conversation deleted successfully"
+            }
+        finally:
+            client.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting conversation: {e}")
 
 if __name__ == "__main__":
     import uvicorn

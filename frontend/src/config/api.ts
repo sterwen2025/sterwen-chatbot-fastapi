@@ -7,4 +7,9 @@ export const API_ENDPOINTS = {
   chatStats: `${API_BASE_URL}/chat/stats`,
   chatAsk: `${API_BASE_URL}/chat/ask`,
   chatAskStream: `${API_BASE_URL}/chat/ask/stream`,
+  conversationsCreate: `${API_BASE_URL}/chat/conversations/create`,
+  conversationsList: `${API_BASE_URL}/chat/conversations`,
+  conversationsGet: (id: string) => `${API_BASE_URL}/chat/conversations/${id}`,
+  conversationsDelete: (id: string) => `${API_BASE_URL}/chat/conversations/${id}`,
+  conversationsSaveMessage: (id: string) => `${API_BASE_URL}/chat/conversations/${id}/messages`,
 };

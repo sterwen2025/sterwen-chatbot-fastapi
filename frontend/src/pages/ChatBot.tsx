@@ -26,7 +26,9 @@ import {
   FilterOutlined,
   DatabaseOutlined,
   RobotOutlined,
-  LoadingOutlined
+  LoadingOutlined,
+  PlusOutlined,
+  HistoryOutlined
 } from '@ant-design/icons';
 import { API_ENDPOINTS } from '../config/api';
 import dayjs, { Dayjs } from 'dayjs';
@@ -51,9 +53,26 @@ interface FilterStats {
   total_count: number;
 }
 
+interface Conversation {
+  conversation_id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
 const ChatBot = () => {
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Session ID management - stored in localStorage for persistence
+  const [sessionId] = useState<string>(() => {
+    const stored = localStorage.getItem('chatbot-session-id');
+    if (stored) return stored;
+    const newId = crypto.randomUUID();
+    localStorage.setItem('chatbot-session-id', newId);
+    return newId;
+  });
 
   // State management
   const [question, setQuestion] = useState('');
@@ -61,6 +80,11 @@ const ChatBot = () => {
   const [loading, setLoading] = useState(false);
   const [statsLoading, setStatsLoading] = useState(false);
   const [searchStatus, setSearchStatus] = useState<string>(''); // Search process status
+
+  // Conversation history state
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
 
   // Filter states
   // Note: Only Meeting Notes has RAG implementation. Factsheet Comments and Transcripts are disabled for now.
@@ -79,6 +103,11 @@ const ChatBot = () => {
     transcripts_count: 0,
     total_count: 0
   });
+
+  // Load conversations list on mount
+  useEffect(() => {
+    loadConversations();
+  }, [sessionId]);
 
   // Fetch funds and portfolios on mount
   useEffect(() => {
@@ -166,6 +195,107 @@ const ChatBot = () => {
     }
   };
 
+  const loadConversations = async () => {
+    try {
+      const response = await fetch(`${API_ENDPOINTS.conversationsList}?session_id=${sessionId}`);
+      const data = await response.json();
+      if (data.success) {
+        setConversations(data.conversations);
+        // Auto-select most recent conversation if available
+        if (data.conversations.length > 0 && !currentConversationId) {
+          loadConversation(data.conversations[0].conversation_id);
+        }
+      }
+    } catch (error) {
+      console.error('Error loading conversations:', error);
+    }
+  };
+
+  const loadConversation = async (conversationId: string) => {
+    try {
+      const response = await fetch(`${API_ENDPOINTS.conversationsGet(conversationId)}?session_id=${sessionId}`);
+      const data = await response.json();
+      if (data.success && data.conversation) {
+        setCurrentConversationId(conversationId);
+        const loadedMessages: ChatMessage[] = data.conversation.messages.map((msg: any) => ({
+          question: msg.question,
+          answer: msg.answer,
+          sources: msg.sources,
+          timestamp: new Date(msg.timestamp)
+        }));
+        setConversation(loadedMessages);
+      }
+    } catch (error) {
+      console.error('Error loading conversation:', error);
+      message.error('Failed to load conversation');
+    }
+  };
+
+  const createNewConversation = async () => {
+    console.log('Creating new conversation...');
+    try {
+      const response = await fetch(API_ENDPOINTS.conversationsCreate, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId, title: "New Conversation" })
+      });
+      console.log('Create conversation response:', response);
+      const data = await response.json();
+      console.log('Create conversation data:', data);
+      if (data.success) {
+        setCurrentConversationId(data.conversation_id);
+        setConversation([]);
+        await loadConversations();
+        message.success('New conversation started');
+      } else {
+        message.error('Failed to create conversation');
+      }
+    } catch (error) {
+      console.error('Error creating conversation:', error);
+      message.error('Failed to create new conversation');
+    }
+  };
+
+  const deleteConversation = async (conversationId: string) => {
+    try {
+      await fetch(`${API_ENDPOINTS.conversationsDelete(conversationId)}?session_id=${sessionId}`, {
+        method: 'DELETE'
+      });
+      await loadConversations();
+      if (conversationId === currentConversationId) {
+        setCurrentConversationId(null);
+        setConversation([]);
+      }
+      message.success('Conversation deleted');
+    } catch (error) {
+      console.error('Error deleting conversation:', error);
+      message.error('Failed to delete conversation');
+    }
+  };
+
+  const saveChatMessage = async (chatMessage: ChatMessage) => {
+    if (!currentConversationId) return;
+
+    try {
+      await fetch(API_ENDPOINTS.conversationsSaveMessage(currentConversationId), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: sessionId,
+          message: {
+            question: chatMessage.question,
+            answer: chatMessage.answer,
+            sources: chatMessage.sources,
+            timestamp: chatMessage.timestamp.toISOString()
+          }
+        })
+      });
+      await loadConversations(); // Refresh list to update titles and timestamps
+    } catch (error) {
+      console.error('Error saving chat message:', error);
+    }
+  };
+
   const handleAsk = async () => {
     if (!question.trim()) {
       message.warning('Please enter a question');
@@ -175,6 +305,13 @@ const ChatBot = () => {
     if (dataSources.length === 0) {
       message.warning('Please select at least one data source');
       return;
+    }
+
+    // Create new conversation if none exists
+    if (!currentConversationId) {
+      await createNewConversation();
+      // Wait a moment for the conversation to be created
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
 
     setLoading(true);
@@ -257,6 +394,14 @@ const ChatBot = () => {
 
               if (jsonData.done) {
                 message.success('Answer received!');
+                // Save the completed message to database
+                const completedMessage: ChatMessage = {
+                  question: currentQuestion,
+                  answer: accumulatedAnswer,
+                  sources: dataSources,
+                  timestamp: tempMessage.timestamp
+                };
+                saveChatMessage(completedMessage);
               }
 
               if (jsonData.error) {
@@ -282,9 +427,20 @@ const ChatBot = () => {
     }
   };
 
-  const handleClearConversation = () => {
-    setConversation([]);
-    message.success('Conversation cleared');
+  const handleClearConversation = async () => {
+    if (!currentConversationId) {
+      setConversation([]);
+      return;
+    }
+
+    try {
+      await deleteConversation(currentConversationId);
+      // Optionally create a new conversation immediately
+      await createNewConversation();
+    } catch (error) {
+      console.error('Error clearing conversation:', error);
+      message.error('Failed to clear conversation');
+    }
   };
 
   return (
@@ -310,6 +466,34 @@ const ChatBot = () => {
           />
         </div>
         <Space size={12}>
+          <Button
+            icon={<PlusOutlined />}
+            onClick={createNewConversation}
+            type="primary"
+            style={{
+              borderRadius: 8,
+              height: 38,
+              padding: '0 16px',
+              fontWeight: 500,
+              transition: 'all 0.2s'
+            }}
+          >
+            New Chat
+          </Button>
+          <Button
+            icon={<HistoryOutlined />}
+            onClick={() => setShowHistory(!showHistory)}
+            type={showHistory ? "primary" : "default"}
+            style={{
+              borderRadius: 8,
+              height: 38,
+              padding: '0 16px',
+              fontWeight: 500,
+              transition: 'all 0.2s'
+            }}
+          >
+            History ({conversations.length})
+          </Button>
           <Button
             icon={<DeleteOutlined />}
             onClick={handleClearConversation}
@@ -498,6 +682,100 @@ const ChatBot = () => {
             </Button>
           </div>
         </Sider>
+
+        {/* Conversation History Sidebar */}
+        {showHistory && (
+          <Sider
+            width={280}
+            style={{
+              background: '#ffffff',
+              borderRight: '1px solid #e1e4e8',
+              overflow: 'auto'
+            }}
+          >
+            <div style={{ padding: '20px' }}>
+              <div style={{
+                marginBottom: 16,
+                paddingBottom: 12,
+                borderBottom: '2px solid #e1e4e8'
+              }}>
+                <Text strong style={{
+                  fontSize: 15,
+                  color: '#374151',
+                  letterSpacing: '0.5px',
+                  textTransform: 'uppercase'
+                }}>
+                  Chat History
+                </Text>
+              </div>
+
+              {conversations.length === 0 ? (
+                <Empty
+                  description="No conversations yet"
+                  image={Empty.PRESENTED_IMAGE_SIMPLE}
+                  style={{ marginTop: 40 }}
+                />
+              ) : (
+                <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                  {conversations.map((conv) => (
+                    <div
+                      key={conv.conversation_id}
+                      onClick={() => loadConversation(conv.conversation_id)}
+                      style={{
+                        padding: '12px',
+                        borderRadius: 8,
+                        background: conv.conversation_id === currentConversationId ? '#e6f7ff' : '#f8f9fa',
+                        border: `1px solid ${conv.conversation_id === currentConversationId ? '#1890ff' : '#e1e4e8'}`,
+                        cursor: 'pointer',
+                        transition: 'all 0.2s',
+                        position: 'relative'
+                      }}
+                      onMouseEnter={(e) => {
+                        if (conv.conversation_id !== currentConversationId) {
+                          e.currentTarget.style.background = '#f0f0f0';
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (conv.conversation_id !== currentConversationId) {
+                          e.currentTarget.style.background = '#f8f9fa';
+                        }
+                      }}
+                    >
+                      <div style={{ marginBottom: 6 }}>
+                        <Text strong style={{
+                          fontSize: 14,
+                          color: '#333',
+                          display: 'block',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap'
+                        }}>
+                          {conv.title}
+                        </Text>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          {conv.message_count} messages
+                        </Text>
+                        <Button
+                          type="text"
+                          danger
+                          size="small"
+                          icon={<DeleteOutlined />}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteConversation(conv.conversation_id);
+                          }}
+                          style={{ padding: '2px 8px' }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </Space>
+              )}
+            </div>
+          </Sider>
+        )}
 
         {/* Chat Area */}
         <Content style={{
