@@ -85,16 +85,17 @@ class CreateConversationRequest(BaseModel):
 def get_user_identifier(request: Request, session_id: Optional[str] = None) -> str:
     """
     Get user identifier from Azure AD authentication or session ID.
-    Priority: Azure AD user > session_id parameter > generated UUID
+    Priority: Azure AD email > Azure AD user ID > session_id parameter > generated UUID
     """
     # Try to get Azure AD user from App Service Authentication headers
-    azure_user_id = request.headers.get("X-MS-CLIENT-PRINCIPAL-ID")
-    azure_user_name = request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME")
+    azure_user_name = request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME")  # Email/username
+    azure_user_id = request.headers.get("X-MS-CLIENT-PRINCIPAL-ID")      # User ID
 
-    if azure_user_id:
-        return f"azure_{azure_user_id}"
-    elif azure_user_name:
+    # Prioritize email over user ID for better stability and user-friendliness
+    if azure_user_name:
         return f"azure_{azure_user_name}"
+    elif azure_user_id:
+        return f"azure_{azure_user_id}"
     elif session_id:
         return f"session_{session_id}"
     else:
