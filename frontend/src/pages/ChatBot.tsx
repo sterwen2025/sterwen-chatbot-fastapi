@@ -35,6 +35,7 @@ import {
 import { API_ENDPOINTS } from '../config/api';
 import dayjs, { Dayjs } from 'dayjs';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 const { Header, Sider, Content } = Layout;
 const { TextArea } = Input;
@@ -92,7 +93,7 @@ const ChatBot = () => {
   const [useWebSearch, setUseWebSearch] = useState(false);
 
   // Filter states
-  // Note: Only Meeting Notes has RAG implementation. Factsheet Comments and Transcripts are disabled for now.
+  // Note: Only Meeting Notes has RAG implementation. Factsheet and Transcripts are disabled for now.
   const [dataSources, setDataSources] = useState<string[]>(['Meeting Notes']);
   const [useDateFilter, setUseDateFilter] = useState(false);
   const [dateRange, setDateRange] = useState<[Dayjs, Dayjs]>([dayjs().subtract(6, 'month'), dayjs()]);
@@ -206,10 +207,7 @@ const ChatBot = () => {
       const data = await response.json();
       if (data.success) {
         setConversations(data.conversations);
-        // Auto-select most recent conversation if available
-        if (data.conversations.length > 0 && !currentConversationId) {
-          loadConversation(data.conversations[0].conversation_id);
-        }
+        // Don't auto-load conversations - let user start fresh or manually select
       }
     } catch (error) {
       console.error('Error loading conversations:', error);
@@ -575,11 +573,8 @@ const ChatBot = () => {
                 <Checkbox value="Meeting Notes" style={{ marginLeft: 0, marginBottom: 6, fontSize: 15 }}>
                   <Text style={{ fontSize: 15 }}>Meeting Notes</Text>
                 </Checkbox>
-                <Checkbox value="Factsheet Comments" style={{ marginLeft: 0, marginBottom: 6, fontSize: 15 }}>
-                  <Text style={{ fontSize: 15 }}>Factsheet Comments</Text>
-                </Checkbox>
-                <Checkbox value="Transcripts" style={{ marginLeft: 0, fontSize: 15 }}>
-                  <Text style={{ fontSize: 15 }}>Transcripts</Text>
+                <Checkbox value="Factsheet" style={{ marginLeft: 0, fontSize: 15 }}>
+                  <Text style={{ fontSize: 15 }}>Factsheet</Text>
                 </Checkbox>
               </Checkbox.Group>
             </div>
@@ -653,16 +648,10 @@ const ChatBot = () => {
                       <Text style={{ fontSize: 15, fontWeight: 500 }}>{filterStats.meeting_notes_count}</Text>
                     </div>
                   )}
-                  {dataSources.includes('Factsheet Comments') && (
+                  {dataSources.includes('Factsheet') && (
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <Text style={{ fontSize: 15, color: '#666' }}>Factsheet</Text>
                       <Text style={{ fontSize: 15, fontWeight: 500 }}>{filterStats.factsheet_comments_count}</Text>
-                    </div>
-                  )}
-                  {dataSources.includes('Transcripts') && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <Text style={{ fontSize: 15, color: '#666' }}>Transcripts</Text>
-                      <Text style={{ fontSize: 15, fontWeight: 500 }}>{filterStats.transcripts_count}</Text>
                     </div>
                   )}
                   <div style={{
@@ -940,6 +929,7 @@ const ChatBot = () => {
                           }}
                         >
                           <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
                             components={{
                               p: ({node, ...props}: any) => <p style={{ margin: '0 0 12px 0', fontSize: 16 }} {...props} />,
                               ul: ({node, ...props}: any) => <ul style={{ margin: '8px 0', paddingLeft: '20px', fontSize: 16 }} {...props} />,
@@ -950,7 +940,11 @@ const ChatBot = () => {
                               code: ({node, inline, ...props}: any) =>
                                 inline
                                   ? <code style={{ background: '#f5f5f5', padding: '2px 6px', borderRadius: 4, fontSize: 15, color: '#d63384' }} {...props} />
-                                  : <code style={{ display: 'block', background: '#f5f5f5', padding: '12px', borderRadius: 8, fontSize: 15, overflowX: 'auto' }} {...props} />
+                                  : <code style={{ display: 'block', background: '#f5f5f5', padding: '12px', borderRadius: 8, fontSize: 15, overflowX: 'auto' }} {...props} />,
+                              table: ({node, ...props}: any) => <table style={{ borderCollapse: 'collapse', width: '100%', margin: '16px 0', fontSize: 15 }} {...props} />,
+                              thead: ({node, ...props}: any) => <thead style={{ background: '#f5f5f5' }} {...props} />,
+                              th: ({node, ...props}: any) => <th style={{ border: '1px solid #ddd', padding: '12px', textAlign: 'left', fontWeight: 600 }} {...props} />,
+                              td: ({node, ...props}: any) => <td style={{ border: '1px solid #ddd', padding: '12px' }} {...props} />
                             }}
                           >
                             {msg.answer}
@@ -1024,7 +1018,12 @@ const ChatBot = () => {
                 <Button
                   size="small"
                   icon={<GlobalOutlined />}
-                  onClick={() => setUseWebSearch(!useWebSearch)}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setUseWebSearch(!useWebSearch);
+                  }}
+                  type="button"
                   style={{
                     borderRadius: 8,
                     border: useWebSearch ? '1px solid #005489' : '1px solid #d1d5db',
@@ -1039,7 +1038,7 @@ const ChatBot = () => {
                     transition: 'all 0.2s'
                   }}
                 >
-                  Search the web
+                  Allow Web Search
                 </Button>
               </div>
 

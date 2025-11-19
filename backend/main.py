@@ -1,7 +1,7 @@
 """
 Meeting Notes & Fund Comments Chatbot API
 ==========================================
-FastAPI backend for intelligent Q&A system with meeting notes, factsheet comments, and transcripts
+FastAPI backend for intelligent Q&A system with meeting notes, factsheets, and transcripts
 """
 
 from fastapi import FastAPI, HTTPException, Request, Header
@@ -16,6 +16,7 @@ import os
 import json
 import uuid
 from google import genai
+from googleapiclient.discovery import build
 from dotenv import load_dotenv
 from embedding_service import EmbeddingService
 from duckduckgo_search import DDGS
@@ -26,6 +27,8 @@ load_dotenv()
 # Configuration
 MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://mongodbsterwen:Genevaboy$1204@sterwendb.global.mongocluster.cosmos.azure.com/?tls=true&authMechanism=SCRAM-SHA-256&retrywrites=false&maxIdleTimeMS=120000")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID", "")
 
 # Configure Gemini client (automatically uses GEMINI_API_KEY from environment)
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
@@ -102,29 +105,6 @@ def get_user_identifier(request: Request, session_id: Optional[str] = None) -> s
     else:
         # Generate new session ID for anonymous users
         return f"session_{str(uuid.uuid4())}"
-
-def perform_web_search(query: str, max_results: int = 5):
-    """
-    Perform web search using DuckDuckGo.
-    Returns list of search results with title, snippet, and URL.
-    """
-    try:
-        print(f"[WEB SEARCH] Searching for: {query}")
-        with DDGS() as ddgs:
-            # Use region='us-en' to get English results from US region
-            results = list(ddgs.text(query, region='us-en', max_results=max_results))
-            formatted_results = []
-            for result in results:
-                formatted_results.append({
-                    "title": result.get("title", ""),
-                    "snippet": result.get("body", ""),
-                    "url": result.get("href", "")
-                })
-            print(f"[WEB SEARCH] Found {len(formatted_results)} results")
-            return formatted_results
-    except Exception as e:
-        print(f"[WEB SEARCH] Error: {e}")
-        return []
 
 def normalize_date_to_month_end(date_input):
     """Convert any date to the last day of its month, except for current month."""
@@ -222,7 +202,7 @@ def get_filtered_meetings(start_date: Optional[str], end_date: Optional[str], se
         raise HTTPException(status_code=500, detail=f"Error getting meetings: {e}")
 
 def get_filtered_fund_comments(start_date: Optional[str], end_date: Optional[str], selected_funds: Optional[List[str]]):
-    """Get fund comments filtered by date and funds."""
+    """Get factsheet count filtered by date and funds."""
     try:
         client = MongoClient(MONGO_URI)
         try:
@@ -230,61 +210,26 @@ def get_filtered_fund_comments(start_date: Optional[str], end_date: Optional[str
             collection = db["factsheets"]
 
             # Build query
-            query_conditions = []
+            query = {}
 
-            # Fund filter
-            if selected_funds:
-                fund_condition = {"UniqueName": {"$in": selected_funds}}
-                query_conditions.append(fund_condition)
+            # Date filter - reportDate is stored as datetime
+            if start_date and end_date:
+                start_dt = datetime.fromisoformat(start_date)
+                end_dt = datetime.fromisoformat(end_date)
+                query["reportDate"] = {
+                    "$gte": start_dt,
+                    "$lte": end_dt
+                }
 
-            # Only get documents with non-empty comments
-            comment_condition = {
-                "$and": [
-                    {"comment": {"$exists": True}},
-                    {"comment": {"$ne": ""}},
-                    {"comment": {"$ne": None}},
-                    {"comment": {"$ne": "None"}}
-                ]
-            }
-            query_conditions.append(comment_condition)
+            # Fund filter - use fund_name field
+            if selected_funds and len(selected_funds) > 0:
+                query["fund_name"] = {"$in": selected_funds}
 
-            # Combine conditions
-            if query_conditions:
-                query = {"$and": query_conditions}
-            else:
-                query = {"comment": {"$exists": True, "$ne": "", "$ne": None, "$ne": "None"}}
+            # Count factsheets matching the query
+            count = collection.count_documents(query)
 
-            # Get all comments
-            comments = list(collection.find(query, {
-                "fund_name": 1,
-                "UniqueName": 1,
-                "reportDate": 1,
-                "comment": 1,
-                "_id": 0
-            }))
-
-            # Normalize dates and filter
-            filtered_comments = []
-            for comment in comments:
-                original_date = comment.get('reportDate')
-                normalized_date = normalize_date_to_month_end(original_date)
-
-                if normalized_date:
-                    comment['reportDate'] = normalized_date
-
-                    # Apply date filter
-                    if start_date and end_date:
-                        comment_date_obj = datetime.strptime(normalized_date, "%Y-%m-%d").date()
-                        start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
-                        end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
-                        if start_date_obj <= comment_date_obj <= end_date_obj:
-                            filtered_comments.append(comment)
-                    else:
-                        filtered_comments.append(comment)
-                elif not start_date and not end_date:
-                    filtered_comments.append(comment)
-
-            return filtered_comments
+            # Return a list with count elements to maintain compatibility with existing code
+            return [{"count": i} for i in range(count)]
         finally:
             client.close()
 
@@ -428,12 +373,17 @@ Current question: "{question}"
 Task: Determine if these two questions are about the SAME topic or DIFFERENT topics.
 
 Guidelines:
-- SAME topic: Follow-up questions, requests for more details, clarifications, or elaborations about the same subject/entity
+- SAME topic: Follow-up questions, requests for more details, clarifications, or elaborations about the EXACT SAME subject/entity
   Examples: "Tell me about AQR" → "More details" (SAME)
-               "What is their strategy?" → "Can you elaborate?" (SAME)
-- DIFFERENT topic: Questions about different entities, companies, funds, or completely different subjects
+           "What is their strategy?" → "Can you elaborate?" (SAME)
+           "Tell me about copper" → "What's the outlook for copper?" (SAME)
+- DIFFERENT topic: Questions about different entities, companies, funds, subjects, or when the entity name changes
   Examples: "Tell me about AQR" → "Tell me about FengHe" (DIFFERENT)
-               "What is AQR's strategy?" → "Tell me about Citadel" (DIFFERENT)
+           "What is AQR's strategy?" → "Tell me about Citadel" (DIFFERENT)
+           "Tell me about copper" → "Tell me about Cooper Square" (DIFFERENT - copper is a commodity, Cooper Square is a fund)
+           "copper" → "Cooper Square" (DIFFERENT - these are different entities despite similar spelling)
+
+IMPORTANT: If the entity name is different (even if similar sounding), classify as DIFFERENT.
 
 Respond with ONLY one word: "SAME" or "DIFFERENT"
 """
@@ -484,7 +434,10 @@ def get_rag_strategy(
 
     # Step 2: Check scope change
     cache_key = f"{start_date}_{end_date}_{sorted(selected_funds) if selected_funds else 'all'}"
+    print(f"[RAG STRATEGY] Cache key: {cache_key}")
+    print(f"[RAG STRATEGY] Available cache keys: {list(rag_cache.keys())}")
     previous_scope = rag_cache.get(cache_key, {}).get('scope')
+    print(f"[RAG STRATEGY] Previous scope: {previous_scope}")
 
     scope_changed = detect_scope_change(
         question,
@@ -543,6 +496,58 @@ def get_cached_rag_results(
 # VECTOR SEARCH
 # ====================================================================================
 
+def find_matching_fund_names(query: str, db) -> List[str]:
+    """
+    Find fund names that match the query (exact or partial).
+    Returns list of matching fund_name values from MeetingChunks.
+    """
+    try:
+        chunks_collection = db["MeetingChunks"]
+
+        # Normalize query for matching - extract meaningful words
+        query_lower = query.lower().strip()
+        # Remove common question words to get the actual search terms
+        stop_words = ['do', 'you', 'know', 'about', 'tell', 'me', 'what', 'is', 'are', 'the', 'a', 'an']
+        query_words = [w for w in query_lower.split() if w not in stop_words and len(w) > 2]
+
+        safe_query = query_lower.encode('ascii', 'ignore').decode('ascii')
+        print(f"[FUND MATCH] Normalized query: {safe_query}".encode('ascii', 'ignore').decode('ascii'), flush=True)
+        print(f"[FUND MATCH] Extracted search words: {query_words}".encode('ascii', 'ignore').decode('ascii'), flush=True)
+
+        if not query_words:
+            print(f"[FUND MATCH] No valid search words extracted".encode('ascii', 'ignore').decode('ascii'), flush=True)
+            return []
+
+        # Use aggregation to get unique fund names with text matching
+        # Build regex pattern for any of the query words
+        pattern = '|'.join(query_words)  # cooper|square
+
+        matching_funds = []
+
+        # Try aggregation approach for CosmosDB compatibility
+        pipeline = [
+            {"$match": {"fund_name": {"$regex": pattern, "$options": "i"}}},
+            {"$group": {"_id": "$fund_name"}},
+            {"$limit": 100}
+        ]
+
+        print(f"[FUND MATCH] Searching with pattern: {pattern}".encode('ascii', 'ignore').decode('ascii'), flush=True)
+
+        results = list(chunks_collection.aggregate(pipeline))
+        matching_funds = [r["_id"] for r in results if r["_id"] and isinstance(r["_id"], str)]
+
+        print(f"[FUND MATCH] Found {len(matching_funds)} matching funds".encode('ascii', 'ignore').decode('ascii'), flush=True)
+
+        for fund in matching_funds[:5]:  # Print first 5 matches
+            safe_fund = fund.encode('ascii', 'ignore').decode('ascii')
+            print(f"[FUND MATCH] Match: {safe_fund}".encode('ascii', 'ignore').decode('ascii'), flush=True)
+
+        return matching_funds
+    except Exception as e:
+        error_msg = str(e).encode('ascii', 'ignore').decode('ascii')
+        print(f"[FUND MATCH] Error: {error_msg}".encode('ascii', 'ignore').decode('ascii'), flush=True)
+        return []
+
 def perform_vector_search(
     question: str,
     data_sources: List[str],
@@ -553,6 +558,7 @@ def perform_vector_search(
 ) -> List[dict]:
     """
     Use RAG vector search to find relevant meeting chunks.
+    Implements hybrid search: combines fund name matching with vector similarity.
 
     Args:
         question: User's question
@@ -579,6 +585,17 @@ def perform_vector_search(
             meetings_collection = db["MeetingNotes"]
             db_time = time.time() - db_start
             print(f"[TIME] DB Connection: {db_time:.3f}s")
+
+            # STEP 0: Check if query matches any fund names (hybrid search boost)
+            fund_match_start = time.time()
+            matched_funds = find_matching_fund_names(question, db)
+            if matched_funds and not selected_funds:
+                # If we found matching fund names and no funds were explicitly selected,
+                # boost results by adding fund filter
+                print(f"[HYBRID SEARCH] Boosting search with matched funds: {matched_funds}")
+                selected_funds = matched_funds
+            fund_match_time = time.time() - fund_match_start
+            print(f"[TIME] Fund Name Matching: {fund_match_time:.3f}s")
 
             # STEP 1: Generate embedding
             embedding_start = time.time()
@@ -689,7 +706,7 @@ def perform_vector_search(
 
             total_time = time.time() - total_start
             print(f"[TIME] TOTAL TIME: {total_time:.3f}s")
-            print(f"[TIME] Breakdown - DB: {db_time:.3f}s | Embedding: {embedding_time:.3f}s | Filter: {filter_time:.3f}s | Pipeline: {pipeline_time:.3f}s | Search: {search_time:.3f}s")
+            print(f"[TIME] Breakdown - DB: {db_time:.3f}s | FundMatch: {fund_match_time:.3f}s | Embedding: {embedding_time:.3f}s | Filter: {filter_time:.3f}s | Pipeline: {pipeline_time:.3f}s | Search: {search_time:.3f}s")
 
             return results
 
@@ -699,6 +716,107 @@ def perform_vector_search(
     except Exception as e:
         print(f"Error in vector search: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error performing vector search: {e}")
+
+def fetch_factsheets(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    selected_funds: Optional[List[str]] = None,
+    limit: int = 20
+) -> List[dict]:
+    """
+    Fetch factsheet documents using filters (no vector search).
+    Returns factsheet documents with all fields.
+
+    Args:
+        start_date: Start date filter (YYYY-MM-DD)
+        end_date: End date filter (YYYY-MM-DD)
+        selected_funds: List of fund names to filter
+        limit: Maximum number of factsheets to return
+
+    Returns:
+        List of factsheet documents with all fields
+    """
+    try:
+        import time
+        start_time = time.time()
+
+        # Connect to MongoDB
+        client = MongoClient(MONGO_URI)
+        try:
+            db = client["fund_reports"]
+            factsheets_collection = db["factsheets"]
+
+            # Build filter query
+            query = {}
+
+            if start_date and end_date:
+                # reportDate is stored as datetime
+                from datetime import datetime
+                start_dt = datetime.fromisoformat(start_date)
+                end_dt = datetime.fromisoformat(end_date)
+                query["reportDate"] = {
+                    "$gte": start_dt,
+                    "$lte": end_dt
+                }
+                print(f"[FACTSHEET] Filtering by date: {start_date} to {end_date}")
+
+            if selected_funds and len(selected_funds) > 0:
+                query["UniqueName"] = {"$in": selected_funds}
+                print(f"[FACTSHEET] Filtering by funds: {selected_funds}")
+
+            # Fetch factsheets, sorted by reportDate descending (most recent first)
+            results = list(factsheets_collection.find(query).sort("reportDate", -1).limit(limit))
+
+            elapsed = time.time() - start_time
+            print(f"[FACTSHEET] Found {len(results)} factsheets in {elapsed:.3f}s")
+
+            return results
+
+        finally:
+            client.close()
+
+    except Exception as e:
+        print(f"Error fetching factsheets: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+def format_factsheets_for_context(factsheets: List[dict]) -> str:
+    """
+    Format factsheet documents for inclusion in chat context.
+    Preserves the entire JSON structure of each factsheet.
+
+    Args:
+        factsheets: List of factsheet documents
+
+    Returns:
+        Formatted string with complete factsheet JSON data
+    """
+    if not factsheets:
+        return ""
+
+    import json
+    context = "=== FACTSHEET DATA ===\n\n"
+
+    for idx, fs in enumerate(factsheets, 1):
+        # Convert ObjectId and datetime to strings for JSON serialization
+        factsheet_copy = {}
+        for key, value in fs.items():
+            if key == '_id':
+                # Skip MongoDB _id field
+                continue
+            elif isinstance(value, datetime):
+                # Convert datetime to ISO format string
+                factsheet_copy[key] = value.isoformat()
+            else:
+                factsheet_copy[key] = value
+
+        # Convert to pretty-printed JSON
+        context += f"Factsheet #{idx}:\n"
+        context += json.dumps(factsheet_copy, indent=2, ensure_ascii=False)
+        context += "\n\n" + "="*80 + "\n\n"
+
+    return context
 
 def ask_claude_with_rag(
     question: str,
@@ -776,7 +894,7 @@ def ask_claude_with_rag(
             else:
                 print("No RAG chunks found")
 
-        # TODO: Implement RAG for factsheet comments and transcripts later
+        # TODO: Implement RAG for factsheets and transcripts later
         # For now, commenting out to test Meeting Notes RAG only
 
         # comment_data = []
@@ -827,15 +945,14 @@ def ask_claude_with_rag(
         full_prompt += f"""Based on the following data sources, please answer this question: {question}
 
 Important instructions:
-- Use information from the provided data sources below AND from our conversation history
-- If the question refers to something mentioned earlier in our conversation, you can use that information
-- **ALWAYS present all Web Search Results when they are provided in the data sources section**
-- When web search results are provided, present them as your answer - do not say there is no information
-- List web search results with their titles and clickable URLs
-- Do NOT add disclaimers about missing information if web search results are available
-- Cite specific sources when possible (meeting dates, report dates, fund names, URLs for web search results)
+- PRIORITIZE internal information (meeting notes and factsheets) over web search results
+- Always check the provided data sources first before using web search
+- If internal information is available, present it first and prominently
+- Use web search only to supplement or provide additional context when internal information is insufficient
+- Use information from our conversation history if the question refers to previous discussion
+- Cite specific sources when possible (meeting dates, report dates, fund names)
 - Be concise and factual
-- Distinguish between meeting notes, monthly factsheet comments, meeting transcripts, and web search results in your response
+- Distinguish between meeting notes and factsheets in your response
 
 Available data sources: {', '.join(data_sources)}
 
@@ -860,11 +977,12 @@ def ask_claude_with_rag_streaming(
     data_sources: List[str],
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    selected_funds: Optional[List[str]] = None,
+    selected_funds: Optional[List[dict]] = None,
     conversation_history: Optional[List[dict]] = None
 ):
     """Send question with RAG-retrieved data to Gemini with streaming support."""
     try:
+        print(f"[DEBUG] ask_claude_with_rag_streaming called with data_sources: {data_sources}")
 
         # Prepare context (same as non-streaming version)
         context = "Available Data Sources:\n\n"
@@ -954,32 +1072,37 @@ def ask_claude_with_rag_streaming(
             # No Meeting Notes data source selected, no RAG
             yield ('STATUS', False)
 
-        # Add Web Search results if selected
-        if "Web Search" in data_sources:
-            print("[WEB SEARCH] Performing web search...")
-            yield ('STATUS', True)
-            web_results = perform_web_search(question, max_results=5)
-            yield ('STATUS', False)
-
-            if web_results:
-                context += "\n=== WEB SEARCH RESULTS ===\n\n"
-                for idx, result in enumerate(web_results, 1):
-                    context += f"{idx}. {result['title']}\n"
-                    context += f"   URL: {result['url']}\n"
-                    context += f"   {result['snippet']}\n\n"
-                    print(f"[WEB SEARCH] Result {idx}: {result['title'][:100]}")
-                print(f"Added {len(web_results)} web search results to context")
-                print(f"[WEB SEARCH] Context preview:\n{context[context.find('=== WEB SEARCH RESULTS ==='):context.find('=== WEB SEARCH RESULTS ===')+500]}")
+        # Fetch factsheet data if selected
+        if "Factsheet" in data_sources:
+            print("[FACTSHEET] Fetching factsheet data...")
+            factsheets = fetch_factsheets(
+                start_date=start_date,
+                end_date=end_date,
+                selected_funds=selected_funds,
+                limit=20
+            )
+            if factsheets:
+                factsheet_context = format_factsheets_for_context(factsheets)
+                context += factsheet_context
+                print(f"[FACTSHEET] Added {len(factsheets)} factsheets to context")
             else:
-                print("No web search results found")
+                print("[FACTSHEET] No factsheets found")
+
+        # Web Search will be handled by Google Search Grounding tool (configured below)
+        use_google_search = "Web Search" in data_sources
+        if use_google_search:
+            print("[WEB SEARCH] Google Search Grounding enabled")
 
         # Debug: Print context length being sent to Claude
         print(f"DEBUG - Total context length: {len(context)} characters")
-        print(f"DEBUG - Context preview (first 500 chars):\n{context[:500]}")
+        # Skip context preview to avoid encoding issues with special characters
+        # print(f"DEBUG - Context preview (first 500 chars):\n{context[:500]}")
 
         # Build prompt with conversation history
         full_prompt = ""
 
+        # Debug: Check conversation history (avoid printing content with unicode)
+        print(f"[DEBUG] Conversation history received: {len(conversation_history) if conversation_history else 0} messages")
         if conversation_history:
             full_prompt += "Previous conversation:\n\n"
             for item in conversation_history[-3:]:  # Last 3 exchanges
@@ -988,35 +1111,105 @@ def ask_claude_with_rag_streaming(
             full_prompt += "---\n\n"
 
         # Add current question with context
-        full_prompt += f"""Based on the following data sources, please answer this question: {question}
+        web_search_instructions = ""
+        if use_google_search:
+            web_search_instructions = """
+3. **CRITICAL - Context-Aware Web Search (MANDATORY)**:
+   - FIRST: Read and analyze ALL the internal data below to understand what entities (funds, companies, managers) are mentioned
+   - THEN: Use web search to find additional current information about those SPECIFIC entities
+   - **DO NOT** search based only on the user's question - use the internal data context
+   - **Example**: If user asks "what about Cooper?" and internal data mentions "Cooper Square fund managed by Chad Clark at Select Equity Group":
+     * GOOD searches: "Cooper Square investment fund", "Chad Clark Select Equity Group", "Cooper Square fund performance 2024"
+     * BAD searches: "Cooper" (too generic, will return irrelevant results)
+   - **CITATION REQUIREMENTS**:
+     * Cite EVERY point from internal data with specific sources (e.g., "Meeting with John Doe, Sept 15, 2025", "Q3 2025 Factsheet")
+     * Use inline citations throughout your analysis, not just at the end
+     * Make citations specific and detailed so users know exactly where information came from
+   - **STRUCTURE YOUR RESPONSE IN TWO CLEAR SECTIONS**:
+     * **Section 1 - Internal Data Analysis**: Present all information from meeting notes and factsheets with detailed inline citations
+     * **Section 2 - Web Search Results**: Present additional current information found via web search with titles and URLs
+     * Include both analysis AND sources in the web search section - not just links
+   - Web searches MUST be relevant to entities found in internal data
+"""
+        else:
+            web_search_instructions = """
+3. Only use the internal data provided below. Web search is not enabled.
+"""
 
-Important instructions:
-- Use information from the provided data sources below AND from our conversation history
-- If the question refers to something mentioned earlier in our conversation, you can use that information
-- **ALWAYS present all Web Search Results when they are provided in the data sources section**
-- When web search results are provided, present them as your answer - do not say there is no information
-- List web search results with their titles and clickable URLs
-- Do NOT add disclaimers about missing information if web search results are available
-- Cite specific sources when possible (meeting dates, report dates, fund names, URLs for web search results)
-- Be concise and factual
-- Distinguish between meeting notes, monthly factsheet comments, meeting transcripts, and web search results in your response
+        full_prompt += f"""Question: {question}
+
+Instructions:
+1. Read and analyze the internal data sources provided below (meeting notes and factsheets)
+2. Present relevant internal information with comprehensive details
+{web_search_instructions}
+4. Synthesize all information (internal + web if enabled) into one comprehensive answer
+5. Provide thorough explanations with context, background, and analysis
+6. Cite all sources with specifics (meeting dates, URLs, fund names, manager names)
+7. Use clear section headers to distinguish internal data from web search results
+8. Give detailed, comprehensive responses - do not be brief
 
 Available data sources: {', '.join(data_sources)}
 
-{context}"""
+Internal Data:
+{context}
+
+Now provide a comprehensive, detailed answer to the question above."""
 
         # Debug: Print the final prompt being sent to Gemini
         print(f"DEBUG - Final prompt length: {len(full_prompt)} characters")
         print(f"DEBUG - Final prompt preview (first 1000 chars):\n{full_prompt[:1000]}")
 
+        # Configure Google Search Grounding if web search is enabled
+        config = None
+        from google.genai import types
+
+        if use_google_search:
+            # Use Google Search Grounding - Gemini automatically searches, reads, and synthesizes web content
+            google_search_tool = types.Tool(google_search=types.GoogleSearch())
+            config = types.GenerateContentConfig(
+                tools=[google_search_tool],
+                temperature=1  # Maximum creativity and varied responses
+            )
+            print("[WEB SEARCH] Configured Google Search Grounding (automatic web content analysis)")
+        else:
+            # Configure for comprehensive responses with no length restrictions
+            config = types.GenerateContentConfig(
+                temperature=1
+            )
+
         # Send to Gemini with streaming
-        response = gemini_client.models.generate_content_stream(
-            model="gemini-2.5-flash",
-            contents=full_prompt
-        )
+        if config:
+            response = gemini_client.models.generate_content_stream(
+                model="gemini-3-pro-preview",
+                contents=full_prompt,
+                config=config
+            )
+        else:
+            response = gemini_client.models.generate_content_stream(
+                model="gemini-3-pro-preview",
+                contents=full_prompt
+            )
 
         for chunk in response:
-            yield chunk.text
+            try:
+                if hasattr(chunk, 'text') and chunk.text:
+                    print(f"[STREAMING] Yielding chunk: {len(chunk.text)} chars")
+                    yield chunk.text
+                else:
+                    print(f"[STREAMING] Chunk has no text attribute or empty text")
+            except Exception as chunk_error:
+                print(f"[STREAMING ERROR] Error processing chunk: {chunk_error}")
+                # Try to extract text from candidates if direct access fails
+                try:
+                    if hasattr(chunk, 'candidates'):
+                        for candidate in chunk.candidates:
+                            if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+                                for part in candidate.content.parts:
+                                    if hasattr(part, 'text') and part.text:
+                                        print(f"[STREAMING] Extracted text from parts: {len(part.text)} chars")
+                                        yield part.text
+                except Exception as extract_error:
+                    print(f"[STREAMING ERROR] Failed to extract text: {extract_error}")
 
     except Exception as e:
         print(f"ERROR in ask_claude_streaming: {str(e)}")
@@ -1203,7 +1396,7 @@ async def get_filter_stats(request: ChatRequest):
             meetings = get_filtered_meetings(request.start_date, request.end_date, request.selected_funds)
             meetings_count = len(meetings)
 
-        if "Factsheet Comments" in request.data_sources:
+        if "Factsheet" in request.data_sources:
             comments = get_filtered_fund_comments(request.start_date, request.end_date, request.selected_funds)
             comments_count = len(comments)
 
@@ -1248,7 +1441,7 @@ async def ask_question(request: ChatRequest):
             sources_used=request.data_sources,
             data_summary={
                 "meeting_notes": "RAG-powered" if "Meeting Notes" in request.data_sources else 0,
-                "factsheet_comments": "Filtered" if "Factsheet Comments" in request.data_sources else 0,
+                "factsheet_comments": "Filtered" if "Factsheet" in request.data_sources else 0,
                 "transcripts": "Filtered" if "Transcripts" in request.data_sources else 0
             }
         )
@@ -1268,6 +1461,7 @@ async def ask_question_stream(request: ChatRequest):
 
         def generate():
             try:
+                print("[DEBUG] Starting generate() function")
                 for item in ask_claude_with_rag_streaming(
                     question=request.question,
                     data_sources=request.data_sources,
@@ -1276,6 +1470,7 @@ async def ask_question_stream(request: ChatRequest):
                     selected_funds=request.selected_funds,
                     conversation_history=request.conversation_history
                 ):
+                    print(f"[DEBUG] Received item from streaming: {type(item)}")
                     # Check if it's a status tuple or text content
                     if isinstance(item, tuple) and item[0] == 'STATUS':
                         # Send search status event
@@ -1286,8 +1481,11 @@ async def ask_question_stream(request: ChatRequest):
 
                 # Send done signal
                 yield f"data: {json.dumps({'done': True})}\n\n"
+                print("[DEBUG] Finished generate() function")
             except Exception as e:
                 print(f"Error in generate: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
         return StreamingResponse(
@@ -1486,6 +1684,42 @@ async def delete_conversation(request: Request, conversation_id: str, session_id
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting conversation: {e}")
 
+@app.get("/api/debug/test-cooper")
+async def test_cooper_search():
+    """Debug endpoint to test Cooper Square search"""
+    try:
+        client = MongoClient(MONGO_URI)
+        db = client["Sterwen"]
+        chunks = db["MeetingChunks"]
+
+        # Test 1: Exact match
+        exact_count = chunks.count_documents({"fund_name": "Cooper Square"})
+
+        # Test 2: Case-insensitive regex
+        regex_results = list(chunks.find({"fund_name": {"$regex": "cooper", "$options": "i"}}).limit(5))
+        regex_funds = [doc.get("fund_name") for doc in regex_results]
+
+        # Test 3: Aggregation
+        pipeline = [
+            {"$match": {"fund_name": {"$regex": "cooper", "$options": "i"}}},
+            {"$group": {"_id": "$fund_name"}},
+            {"$limit": 10}
+        ]
+        agg_results = list(chunks.aggregate(pipeline))
+        agg_funds = [r["_id"] for r in agg_results]
+
+        client.close()
+
+        return {
+            "exact_match_count": exact_count,
+            "regex_find_results": regex_funds,
+            "aggregation_results": agg_funds,
+            "test_completed": True
+        }
+    except Exception as e:
+        return {"error": str(e), "test_completed": False}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
