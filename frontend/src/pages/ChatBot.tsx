@@ -1023,7 +1023,7 @@ const ChatBot = () => {
                     e.stopPropagation();
                     setUseWebSearch(!useWebSearch);
                   }}
-                  type="button"
+                  type="default"
                   style={{
                     borderRadius: 8,
                     border: useWebSearch ? '1px solid #005489' : '1px solid #d1d5db',
