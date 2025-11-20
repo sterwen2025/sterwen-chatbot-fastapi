@@ -1,4 +1,4 @@
-import { ConfigProvider } from 'antd';
+import { ConfigProvider, App as AntdApp } from 'antd';
 import ChatBot from './pages/ChatBot';
 import './App.css';
 
@@ -13,7 +13,9 @@ const App = () => {
         },
       }}
     >
-      <ChatBot />
+      <AntdApp>
+        <ChatBot />
+      </AntdApp>
     </ConfigProvider>
   );
 };

@@ -8,7 +8,7 @@ import {
   DatePicker,
   Select,
   Space,
-  message,
+  App,
   Spin,
   Typography,
   Divider,
@@ -65,6 +65,9 @@ interface Conversation {
 }
 
 const ChatBot = () => {
+  // Get message API from App context
+  const { message } = App.useApp();
+
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -249,7 +252,6 @@ const ChatBot = () => {
         setCurrentConversationId(data.conversation_id);
         setConversation([]);
         await loadConversations();
-        message.success('New conversation started');
       } else {
         message.error('Failed to create conversation');
       }
@@ -399,7 +401,6 @@ const ChatBot = () => {
               }
 
               if (jsonData.done) {
-                message.success('Answer received!');
                 // Save the completed message to database
                 const completedMessage: ChatMessage = {
                   question: currentQuestion,

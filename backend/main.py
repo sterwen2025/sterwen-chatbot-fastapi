@@ -15,6 +15,7 @@ import calendar
 import os
 import json
 import uuid
+import re
 from google import genai
 from dotenv import load_dotenv
 from embedding_service import EmbeddingService
@@ -46,6 +47,21 @@ print("CONTAINER VERSION: 2024-11-13-gemini-2.5-flash-switch")
 print("=" * 80)
 
 app = FastAPI(title="Meeting Notes Chatbot API", version="1.0.0")
+
+# Helper function to strip HTML tags from text
+def strip_html_tags(text: str) -> str:
+    """Remove HTML tags from text, replacing them with appropriate markdown or whitespace."""
+    if not text:
+        return text
+    # Replace <br> and <br/> with newlines
+    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+    # Replace </p>, </div>, </h1-6> with double newlines for paragraph breaks
+    text = re.sub(r'</(p|div|h[1-6])>', '\n\n', text, flags=re.IGNORECASE)
+    # Remove all other HTML tags
+    text = re.sub(r'<[^>]+>', '', text)
+    # Clean up multiple consecutive newlines (more than 2)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text
 
 # CORS middleware
 app.add_middleware(
@@ -1141,20 +1157,25 @@ def ask_gemini_with_rag_streaming(
         full_prompt += f"""Question: {question}
 
 Instructions:
-1. **DATE AWARENESS - CRITICAL**:
+1. **FORMATTING - CRITICAL**:
+   - Use ONLY standard markdown formatting - NO HTML tags
+   - For line breaks within lists, use double newlines between items
+   - For tables, use proper markdown table syntax with pipes (|)
+   - NEVER use HTML tags like <br>, <table>, <div>, etc.
+2. **DATE AWARENESS - CRITICAL**:
    - Financial data is highly time-sensitive - always check the dates of data sources
    - When answering questions about "current" or "latest" positions, performance, or holdings, prioritize the MOST RECENT factsheets and meeting notes
    - Clearly state the date of the data you're referencing (e.g., "As of October 2025..." or "Based on the October 31, 2025 factsheet...")
    - If comparing data across time periods, explicitly mention the dates being compared
    - Be aware that factsheets may be dated differently - use the most recent available data
-2. Read and analyze the internal data sources provided below (meeting notes and factsheets)
-3. Present relevant internal information with comprehensive details
+3. Read and analyze the internal data sources provided below (meeting notes and factsheets)
+4. Present relevant internal information with comprehensive details
 {web_search_instructions}
-4. Synthesize all information (internal + web if enabled) into one comprehensive answer
-5. Provide thorough explanations with context, background, and analysis
-6. Cite all sources with specifics (meeting dates, URLs, fund names, manager names)
-7. Use clear section headers to distinguish internal data from web search results
-8. Give detailed, comprehensive responses - do not be brief
+5. Synthesize all information (internal + web if enabled) into one comprehensive answer
+6. Provide thorough explanations with context, background, and analysis
+7. Cite all sources with specifics (meeting dates, URLs, fund names, manager names)
+8. Use clear section headers to distinguish internal data from web search results
+9. Give detailed, comprehensive responses - do not be brief
 
 Available data sources: {', '.join(data_sources)}
 
@@ -1181,13 +1202,15 @@ Now provide a comprehensive, detailed answer to the question above."""
             google_search_tool = types.Tool(google_search=types.GoogleSearch())
             config = types.GenerateContentConfig(
                 tools=[google_search_tool],
-                temperature=1  # Maximum creativity and varied responses
+                temperature=1,  # Maximum creativity and varied responses
+                thinking_config=types.ThinkingConfig(thinking_level="low")  # Speed up responses
             )
             print("[WEB SEARCH] Configured Google Search Grounding (automatic web content analysis)")
         else:
             # Configure for comprehensive responses with no length restrictions
             config = types.GenerateContentConfig(
-                temperature=1
+                temperature=1,
+                thinking_config=types.ThinkingConfig(thinking_level="low")  # Speed up responses
             )
 
         # Send to Gemini with streaming
@@ -1519,8 +1542,9 @@ async def ask_question_stream(request: ChatRequest):
                         # Send search status event
                         yield f"data: {json.dumps({'searching': item[1]})}\n\n"
                     else:
-                        # Send each text chunk as Server-Sent Events format
-                        yield f"data: {json.dumps({'content': item})}\n\n"
+                        # Strip HTML tags and send each text chunk as Server-Sent Events format
+                        cleaned_content = strip_html_tags(item) if isinstance(item, str) else item
+                        yield f"data: {json.dumps({'content': cleaned_content})}\n\n"
 
                 # Send done signal
                 yield f"data: {json.dumps({'done': True})}\n\n"
