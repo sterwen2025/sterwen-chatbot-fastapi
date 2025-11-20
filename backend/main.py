@@ -2,6 +2,8 @@
 Meeting Notes & Fund Comments Chatbot API
 ==========================================
 FastAPI backend for intelligent Q&A system with meeting notes, factsheets, and transcripts
+
+Version: 2024-11-20 - Added Gemini optimizations for faster responses
 """
 
 from fastapi import FastAPI, HTTPException, Request, Header
