@@ -95,6 +95,10 @@ const ChatBot = () => {
   // Web search toggle
   const [useWebSearch, setUseWebSearch] = useState(false);
 
+  // Model selection state
+  const [model, setModel] = useState<'gemini-2.5-flash' | 'gemini-2.5-pro' | 'gemini-3-low-thinking' | 'gemini-3-high-thinking'>('gemini-2.5-flash');
+  const [thinkingSummary, setThinkingSummary] = useState<string>(''); // Stores thinking progress
+
   // Filter states
   // Note: Only Meeting Notes has RAG implementation. Factsheet and Transcripts are disabled for now.
   const [dataSources, setDataSources] = useState<string[]>(['Meeting Notes']);
@@ -321,6 +325,7 @@ const ChatBot = () => {
 
     setLoading(true);
     setSearchStatus(''); // Start with no status, wait for backend signal
+    setThinkingSummary(''); // Clear thinking summary from previous request
     const currentQuestion = question;
     setQuestion(''); // Clear input immediately
 
@@ -350,7 +355,8 @@ const ChatBot = () => {
           conversation_history: conversation.map(msg => ({
             question: msg.question,
             answer: msg.answer
-          }))
+          })),
+          model: model
         })
       });
 
@@ -383,10 +389,18 @@ const ChatBot = () => {
                 }
               }
 
+              // Handle thinking event
+              if (jsonData.hasOwnProperty('thinking')) {
+                setThinkingSummary(jsonData.thinking);
+              }
+
               if (jsonData.content) {
-                // Clear search status when first content arrives
+                // Clear search status and thinking summary when first content arrives
                 if (searchStatus) {
                   setSearchStatus('');
+                }
+                if (thinkingSummary) {
+                  setThinkingSummary('');
                 }
                 accumulatedAnswer += jsonData.content;
                 // Update the last message in conversation with accumulated answer
@@ -431,6 +445,7 @@ const ChatBot = () => {
     } finally {
       setLoading(false);
       setSearchStatus(''); // Clear search status
+      setThinkingSummary(''); // Clear thinking summary
     }
   };
 
@@ -1001,6 +1016,62 @@ const ChatBot = () => {
                   </div>
                 )}
 
+                {/* Thinking Summary Indicator */}
+                {thinkingSummary && (
+                  <div style={{
+                    display: 'flex',
+                    justifyContent: 'flex-start',
+                    alignItems: 'flex-start'
+                  }}>
+                    <div style={{
+                      width: 38,
+                      height: 38,
+                      borderRadius: '50%',
+                      background: 'linear-gradient(135deg, #f0f4f8 0%, #e5ecf3 100%)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      marginRight: 12,
+                      flexShrink: 0,
+                      border: '1px solid #e1e4e8',
+                      boxShadow: '0 2px 4px rgba(0,0,0,0.04)'
+                    }}>
+                      <RobotOutlined style={{ fontSize: 18, color: '#0066a1' }} />
+                    </div>
+                    <div style={{
+                      maxWidth: 'calc(80% - 50px)',
+                      background: '#fef9f3',
+                      padding: '18px 22px',
+                      borderRadius: '6px 20px 20px 20px',
+                      boxShadow: '0 4px 12px rgba(0,0,0,0.06), 0 2px 4px rgba(0,0,0,0.03)',
+                      border: '1px solid #fde4c7',
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: 12
+                    }}>
+                      <LoadingOutlined style={{ fontSize: 16, color: '#d97706', marginTop: 2 }} />
+                      <div style={{ flex: 1 }}>
+                        <Text strong style={{
+                          color: '#92400e',
+                          fontSize: 13,
+                          display: 'block',
+                          marginBottom: 4
+                        }}>
+                          Thinking...
+                        </Text>
+                        <Text style={{
+                          color: '#78716c',
+                          fontSize: 14,
+                          fontStyle: 'italic',
+                          lineHeight: 1.5
+                        }}>
+                          {thinkingSummary}
+                        </Text>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 <div ref={messagesEndRef} />
               </Space>
             )}
@@ -1014,7 +1085,7 @@ const ChatBot = () => {
             boxShadow: '0 -4px 16px rgba(0,0,0,0.04)'
           }}>
             <div style={{ maxWidth: 900, margin: '0 auto' }}>
-              {/* Web Search Toggle */}
+              {/* Web Search Toggle & Model Selector */}
               <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
                 <Button
                   size="small"
@@ -1041,6 +1112,24 @@ const ChatBot = () => {
                 >
                   Allow Web Search
                 </Button>
+
+                <Select
+                  size="small"
+                  value={model}
+                  onChange={(value) => setModel(value as 'gemini-2.5-flash' | 'gemini-2.5-pro' | 'gemini-3-low-thinking' | 'gemini-3-high-thinking')}
+                  style={{
+                    width: 200,
+                    borderRadius: 8,
+                    fontSize: 13,
+                    height: 28
+                  }}
+                  options={[
+                    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+                    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+                    { value: 'gemini-3-low-thinking', label: 'Gemini 3 (Fast)' },
+                    { value: 'gemini-3-high-thinking', label: 'Gemini 3 (Thorough)' }
+                  ]}
+                />
               </div>
 
               <div style={{

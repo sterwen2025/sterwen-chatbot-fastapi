@@ -88,6 +88,7 @@ class ChatRequest(BaseModel):
     end_date: Optional[str] = None
     selected_funds: Optional[List[str]] = None
     conversation_history: Optional[List[dict]] = None
+    model: Optional[str] = "gemini-2.5-flash"  # "gemini-2.5-flash", "gemini-2.5-pro", "gemini-3-low-thinking", "gemini-3-high-thinking"
 
 class ChatResponse(BaseModel):
     answer: str
@@ -474,49 +475,108 @@ def get_cached_rag_results(
 
 def find_matching_fund_names(query: str, db=None) -> List[str]:
     """
-    Find fund names that match the query (exact or partial) using in-memory cache.
+    Find fund names that match the query using smart phrase-based matching with adjective context detection.
     Returns list of matching fund_name values.
     Note: db parameter kept for backward compatibility but no longer used.
+
+    Uses 3 strategies in order:
+    1. Exact phrase match - Full fund name in query
+    2. Two consecutive words - With adjective context detection to avoid false positives
+    3. Single distinctive word - 5+ chars, not adjectives
     """
     try:
         # Ensure fund names are loaded
         if not FUND_NAMES_LOADED:
             load_all_fund_names()
 
-        # Normalize query for matching - extract meaningful words
-        query_lower = query.lower().strip()
-        # Remove common question words to get the actual search terms
-        stop_words = ['do', 'you', 'know', 'about', 'tell', 'me', 'what', 'is', 'are', 'the', 'a', 'an']
-        query_words = [w for w in query_lower.split() if w not in stop_words and len(w) > 2]
+        safe_query = query.encode('ascii', 'ignore').decode('ascii')
+        print(f"[FUND MATCH] Query: {safe_query}".encode('ascii', 'ignore').decode('ascii'), flush=True)
 
-        safe_query = query_lower.encode('ascii', 'ignore').decode('ascii')
-        print(f"[FUND MATCH] Normalized query: {safe_query}".encode('ascii', 'ignore').decode('ascii'), flush=True)
-        print(f"[FUND MATCH] Extracted search words: {query_words}".encode('ascii', 'ignore').decode('ascii'), flush=True)
+        query_lower = query.lower()
 
-        if not query_words:
-            print(f"[FUND MATCH] No valid search words extracted".encode('ascii', 'ignore').decode('ascii'), flush=True)
-            return []
+        # Adjective context detection: phrases that indicate words are being used as adjectives
+        adjective_indicators = [
+            'top positions', 'top holdings', 'top performing', 'top 10', 'top five',
+            'best positions', 'best holdings', 'best performing',
+            'latest positions', 'latest holdings', 'latest factsheet',
+            'largest positions', 'largest holdings',
+            'current positions', 'current holdings'
+        ]
 
-        # Search in-memory cache (no database query needed!)
+        # Check if query has adjective context (e.g., "what are the top positions")
+        has_adjective_context = any(indicator in query_lower for indicator in adjective_indicators)
+
+        # Common adjectives that shouldn't match fund names when used in adjective context
+        common_adjectives = {'top', 'best', 'latest', 'largest', 'current', 'main', 'primary'}
+
         matching_funds = []
+
         for fund_name in ALL_FUND_NAMES:
             fund_name_lower = fund_name.lower()
-            # Check if any query word appears in the fund name
-            for word in query_words:
-                if word in fund_name_lower:
+
+            # Get all words from fund name (no filtering yet)
+            fund_words_all = fund_name_lower.split()
+
+            # Strategy 1: Exact phrase match (most reliable)
+            if fund_name_lower in query_lower:
+                matching_funds.append(fund_name)
+                safe_fund = fund_name.encode('ascii', 'ignore').decode('ascii')
+                print(f"[FUND MATCH] Strategy 1 - Exact phrase: {safe_fund}".encode('ascii', 'ignore').decode('ascii'), flush=True)
+                continue
+
+            # Strategy 2: Two consecutive words with adjective filtering
+            # Check consecutive word pairs from the fund name
+            matched_in_strategy2 = False
+            for i in range(len(fund_words_all) - 1):
+                word1 = fund_words_all[i]
+                word2 = fund_words_all[i+1]
+                two_word_phrase = f"{word1} {word2}"
+
+                if two_word_phrase in query_lower:
+                    # Skip if first word is a common adjective AND query has adjective context
+                    # This prevents "top positions" from matching "Top Ace Capital"
+                    if word1 in common_adjectives and has_adjective_context:
+                        continue
+
                     matching_funds.append(fund_name)
-                    break  # Found a match, no need to check other words
+                    safe_fund = fund_name.encode('ascii', 'ignore').decode('ascii')
+                    safe_phrase = two_word_phrase.encode('ascii', 'ignore').decode('ascii')
+                    print(f"[FUND MATCH] Strategy 2 - Two words: {safe_fund} (phrase: '{safe_phrase}')".encode('ascii', 'ignore').decode('ascii'), flush=True)
+                    matched_in_strategy2 = True
+                    break
 
-        print(f"[FUND MATCH] Found {len(matching_funds)} matching funds (from {len(ALL_FUND_NAMES)} total in cache)".encode('ascii', 'ignore').decode('ascii'), flush=True)
+            if matched_in_strategy2:
+                continue
 
-        for fund in matching_funds[:5]:  # Print first 5 matches
-            safe_fund = fund.encode('ascii', 'ignore').decode('ascii')
-            print(f"[FUND MATCH] Match: {safe_fund}".encode('ascii', 'ignore').decode('ascii'), flush=True)
+            # Strategy 3: Single distinctive word (5+ chars, not adjectives)
+            for word in fund_words_all:
+                # Only match words that are:
+                # - Long enough to be distinctive (5+ chars)
+                # - Not common adjectives
+                if len(word) >= 5 and word not in common_adjectives:
+                    if word in query_lower:
+                        matching_funds.append(fund_name)
+                        safe_fund = fund_name.encode('ascii', 'ignore').decode('ascii')
+                        safe_word = word.encode('ascii', 'ignore').decode('ascii')
+                        print(f"[FUND MATCH] Strategy 3 - Single word: {safe_fund} (word: '{safe_word}')".encode('ascii', 'ignore').decode('ascii'), flush=True)
+                        break
 
-        return matching_funds
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_matches = []
+        for fund in matching_funds:
+            if fund not in seen:
+                seen.add(fund)
+                unique_matches.append(fund)
+
+        print(f"[FUND MATCH] Found {len(unique_matches)} matching funds (from {len(ALL_FUND_NAMES)} total)".encode('ascii', 'ignore').decode('ascii'), flush=True)
+
+        return unique_matches
+
     except Exception as e:
         error_msg = str(e).encode('ascii', 'ignore').decode('ascii')
         print(f"[FUND MATCH] Error: {error_msg}".encode('ascii', 'ignore').decode('ascii'), flush=True)
+        # Fallback to empty list on error
         return []
 
 def perform_vector_search(
@@ -978,11 +1038,28 @@ def ask_gemini_with_rag_streaming(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     selected_funds: Optional[List[dict]] = None,
-    conversation_history: Optional[List[dict]] = None
+    conversation_history: Optional[List[dict]] = None,
+    model: str = "gemini-2.5-flash"
 ):
     """Send question with RAG-retrieved data to Gemini with streaming support."""
     import time
+    from google.genai import types
     overall_start = time.time()
+
+    # Map frontend model names to actual API model names and thinking config
+    actual_model = model
+    thinking_config = None
+
+    if model == "gemini-3-low-thinking":
+        actual_model = "gemini-3-pro-preview"
+        thinking_config = types.ThinkingConfig(thinking_level="low")
+        print(f"[MODEL] Using {actual_model} with low thinking")
+    elif model == "gemini-3-high-thinking":
+        actual_model = "gemini-3-pro-preview"
+        thinking_config = None
+        print(f"[MODEL] Using {actual_model} with default (high) thinking")
+    else:
+        print(f"[MODEL] Using {actual_model}")
 
     try:
         print(f"\n{'='*80}")
@@ -1197,23 +1274,33 @@ Now provide a comprehensive, detailed answer to the question above."""
         # Configure Google Search Grounding if web search is enabled
         step_start = time.time()
         config = None
-        from google.genai import types
 
         if use_google_search:
             # Use Google Search Grounding - Gemini automatically searches, reads, and synthesizes web content
             google_search_tool = types.Tool(google_search=types.GoogleSearch())
-            config = types.GenerateContentConfig(
-                tools=[google_search_tool],
-                temperature=1,  # Maximum creativity and varied responses
-                thinking_config=types.ThinkingConfig(thinking_level="low")  # Speed up responses
-            )
-            print("[WEB SEARCH] Configured Google Search Grounding (automatic web content analysis)")
+            if thinking_config:
+                config = types.GenerateContentConfig(
+                    tools=[google_search_tool],
+                    temperature=1,  # Maximum creativity and varied responses
+                    thinking_config=thinking_config
+                )
+            else:
+                config = types.GenerateContentConfig(
+                    tools=[google_search_tool],
+                    temperature=1
+                )
+            print(f"[WEB SEARCH] Configured Google Search Grounding")
         else:
             # Configure for comprehensive responses with no length restrictions
-            config = types.GenerateContentConfig(
-                temperature=1,
-                thinking_config=types.ThinkingConfig(thinking_level="low")  # Speed up responses
-            )
+            if thinking_config:
+                config = types.GenerateContentConfig(
+                    temperature=1,
+                    thinking_config=thinking_config
+                )
+            else:
+                config = types.GenerateContentConfig(
+                    temperature=1
+                )
 
         # Send to Gemini with streaming
         api_call_time = time.time() - step_start
@@ -1223,13 +1310,13 @@ Now provide a comprehensive, detailed answer to the question above."""
             step_start = time.time()
             if config:
                 response = gemini_client.models.generate_content_stream(
-                    model="gemini-3-pro-preview",
+                    model=actual_model,
                     contents=full_prompt,
                     config=config
                 )
             else:
                 response = gemini_client.models.generate_content_stream(
-                    model="gemini-3-pro-preview",
+                    model=actual_model,
                     contents=full_prompt
                 )
 
@@ -1244,24 +1331,37 @@ Now provide a comprehensive, detailed answer to the question above."""
                     print(f"[TIMING] Time to first chunk: {first_chunk_time:.3f}s")
                     first_chunk = False
                 try:
+                    # Debug: Print chunk structure
+                    print(f"[DEBUG] Chunk type: {type(chunk)}")
+                    print(f"[DEBUG] Chunk attributes: {dir(chunk)}")
+
+                    # Try to access text directly first (for backwards compatibility)
                     if hasattr(chunk, 'text') and chunk.text:
                         print(f"[STREAMING] Yielding chunk: {len(chunk.text)} chars")
                         yield chunk.text
+                    # Try to extract from candidates.content.parts
+                    elif hasattr(chunk, 'candidates'):
+                        for candidate in chunk.candidates:
+                            if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+                                for part in candidate.content.parts:
+                                    print(f"[DEBUG] Part type: {type(part)}, attributes: {dir(part)}")
+
+                                    # Check if this is a thought summary
+                                    if hasattr(part, 'thought') and part.thought:
+                                        # Yield thought summary with special marker
+                                        if hasattr(part, 'text') and part.text:
+                                            print(f"[STREAMING] Yielding thought summary: {len(part.text)} chars")
+                                            yield f"__THOUGHT__{part.text}__END_THOUGHT__"
+                                    # Regular content
+                                    elif hasattr(part, 'text') and part.text:
+                                        print(f"[STREAMING] Extracted text from parts: {len(part.text)} chars")
+                                        yield part.text
                     else:
-                        print(f"[STREAMING] Chunk has no text attribute or empty text")
+                        print(f"[STREAMING] Chunk has no accessible text")
                 except Exception as chunk_error:
                     print(f"[STREAMING ERROR] Error processing chunk: {chunk_error}")
-                    # Try to extract text from candidates if direct access fails
-                    try:
-                        if hasattr(chunk, 'candidates'):
-                            for candidate in chunk.candidates:
-                                if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
-                                    for part in candidate.content.parts:
-                                        if hasattr(part, 'text') and part.text:
-                                            print(f"[STREAMING] Extracted text from parts: {len(part.text)} chars")
-                                            yield part.text
-                    except Exception as extract_error:
-                        print(f"[STREAMING ERROR] Failed to extract text: {extract_error}")
+                    import traceback
+                    traceback.print_exc()
 
         except Exception as api_error:
             # Handle Gemini API errors (rate limits, overload, etc.)
@@ -1526,6 +1626,7 @@ async def ask_question_stream(request: ChatRequest):
         print(f"Data sources: {request.data_sources}")
         print(f"Date range: {request.start_date} to {request.end_date}")
         print(f"Selected funds: {request.selected_funds}")
+        print(f"Model: {request.model}")
 
         def generate():
             try:
@@ -1536,13 +1637,18 @@ async def ask_question_stream(request: ChatRequest):
                     start_date=request.start_date,
                     end_date=request.end_date,
                     selected_funds=request.selected_funds,
-                    conversation_history=request.conversation_history
+                    conversation_history=request.conversation_history,
+                    model=request.model
                 ):
                     print(f"[DEBUG] Received item from streaming: {type(item)}")
                     # Check if it's a status tuple or text content
                     if isinstance(item, tuple) and item[0] == 'STATUS':
                         # Send search status event
                         yield f"data: {json.dumps({'searching': item[1]})}\n\n"
+                    elif isinstance(item, str) and '__THOUGHT__' in item:
+                        # Extract thought content and send as thinking event
+                        thought_content = item.replace('__THOUGHT__', '').replace('__END_THOUGHT__', '')
+                        yield f"data: {json.dumps({'thinking': thought_content})}\n\n"
                     else:
                         # Strip HTML tags and send each text chunk as Server-Sent Events format
                         cleaned_content = strip_html_tags(item) if isinstance(item, str) else item
