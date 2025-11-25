@@ -768,10 +768,14 @@ def fetch_factsheets(
 
         # Connect to MongoDB
         db = mongo_client["fund_reports"]
-        factsheets_collection = db["factsheets"]
+        factsheets_collection = db["factsheets - Alex"]
 
-        # Build filter query
-        query = {}
+        # Build filter query - only use valid factsheets with UniqueName
+        # Note: Records without UniqueName field cannot be included in statistics
+        query = {
+            "is_fund_factsheet": "y",
+            "UniqueName": {"$exists": True, "$ne": None}
+        }
 
         if start_date and end_date:
             # reportDate is stored as datetime
@@ -821,6 +825,157 @@ def fetch_factsheets(
         import traceback
         traceback.print_exc()
         return []
+
+def perform_factsheet_vector_search(
+    question: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    selected_funds: Optional[List[str]] = None,
+    top_k: int = 50
+) -> List[dict]:
+    """
+    Use RAG vector search to find relevant factsheet chunks.
+
+    Args:
+        question: User's question
+        start_date: Start date filter (YYYY-MM-DD)
+        end_date: End date filter (YYYY-MM-DD)
+        selected_funds: List of fund names to filter
+        top_k: Number of top results to return
+
+    Returns:
+        List of relevant chunk documents
+    """
+    try:
+        import time
+
+        total_start = time.time()
+
+        # Connect to MongoDB
+        db_start = time.time()
+        db = mongo_client["fund_reports"]
+        chunks_collection = db["FactsheetChunks"]
+        db_time = time.time() - db_start
+        print(f"[FACTSHEET TIME] DB Connection: {db_time:.3f}s")
+
+        # STEP 1: Generate embedding
+        embedding_start = time.time()
+        embedding_service = EmbeddingService(GEMINI_API_KEY)
+        print(f"[FACTSHEET] Generating embedding for query: {question[:100]}...")
+        query_embedding = embedding_service.generate_embedding(
+            question,
+            task_type="RETRIEVAL_QUERY"
+        )
+        embedding_time = time.time() - embedding_start
+        print(f"[FACTSHEET TIME] Embedding Generation: {embedding_time:.3f}s")
+
+        # STEP 2: Build filter for cosmosSearch (pre-filtering)
+        filter_start = time.time()
+        cosmos_filter = {}
+
+        if start_date and end_date:
+            # reportDate is stored as datetime in factsheets
+            from datetime import datetime as dt
+            start_dt = dt.fromisoformat(start_date)
+            end_dt = dt.fromisoformat(end_date)
+            cosmos_filter["report_date"] = {
+                "$gte": start_dt,
+                "$lte": end_dt
+            }
+            print(f"[FACTSHEET] Filtering by date: {start_date} to {end_date}")
+
+        if selected_funds and len(selected_funds) > 0:
+            cosmos_filter["fund_name"] = {"$in": selected_funds}
+            print(f"[FACTSHEET] Filtering by funds: {selected_funds}")
+
+        filter_time = time.time() - filter_start
+        print(f"[FACTSHEET TIME] Filter Building: {filter_time:.3f}s")
+
+        # STEP 3: Build vector search pipeline with filter inside cosmosSearch
+        pipeline_start = time.time()
+        if cosmos_filter:
+            print(f"[FACTSHEET] Performing ENN filtered vector search (exact match on subset)...")
+            pipeline = [
+                {
+                    "$search": {
+                        "cosmosSearch": {
+                            "vector": query_embedding,
+                            "path": "embedding",
+                            "k": top_k,
+                            "filter": cosmos_filter,  # Pre-filter before vector search
+                            "exact": True  # Use ENN for filtered searches - 50% faster per MS docs
+                        },
+                        "returnStoredSource": True
+                    }
+                },
+                {
+                    "$project": {
+                        "chunk_id": 1,
+                        "factsheet_id": 1,
+                        "text": 1,
+                        "fund_name": 1,
+                        "report_date": 1,
+                        "file_path": 1,
+                        "chunk_type": 1,
+                        "full_document": 1,  # Include complete factsheet data
+                        "score": {"$meta": "searchScore"}
+                    }
+                }
+            ]
+        else:
+            # No filters, search all
+            print(f"[FACTSHEET] Performing vector search on all factsheets...")
+            pipeline = [
+                {
+                    "$search": {
+                        "cosmosSearch": {
+                            "vector": query_embedding,
+                            "path": "embedding",
+                            "k": top_k
+                        },
+                        "returnStoredSource": True
+                    }
+                },
+                {
+                    "$project": {
+                        "chunk_id": 1,
+                        "factsheet_id": 1,
+                        "text": 1,
+                        "fund_name": 1,
+                        "report_date": 1,
+                        "file_path": 1,
+                        "chunk_type": 1,
+                        "full_document": 1,  # Include complete factsheet data
+                        "score": {"$meta": "searchScore"}
+                    }
+                }
+            ]
+
+        pipeline_time = time.time() - pipeline_start
+        print(f"[FACTSHEET TIME] Pipeline Building: {pipeline_time:.3f}s")
+
+        # STEP 4: Execute vector search
+        search_start = time.time()
+        results = list(chunks_collection.aggregate(pipeline))
+        search_time = time.time() - search_start
+        print(f"[FACTSHEET TIME] Vector Search Execution: {search_time:.3f}s")
+        print(f"[FACTSHEET] Found {len(results)} results")
+
+        # Results are already limited by k in cosmosSearch
+        print(f"[FACTSHEET] Returning {len(results)} chunks")
+
+        total_time = time.time() - total_start
+        print(f"[FACTSHEET TIME] TOTAL TIME: {total_time:.3f}s")
+        print(f"[FACTSHEET TIME] Breakdown - DB: {db_time:.3f}s | Embedding: {embedding_time:.3f}s | Filter: {filter_time:.3f}s | Pipeline: {pipeline_time:.3f}s | Search: {search_time:.3f}s")
+
+        return results
+
+    except Exception as e:
+        print(f"[FACTSHEET] Error in vector search: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return []
+
 
 def format_factsheets_for_context(factsheets: List[dict]) -> str:
     """
@@ -873,6 +1028,107 @@ def format_factsheets_for_context(factsheets: List[dict]) -> str:
 
         # Convert to pretty-printed JSON with filename and date in label
         context += f"Factsheet - {filename} ({report_date_str}):\n"
+        context += json.dumps(factsheet_copy, indent=2, ensure_ascii=False)
+        context += "\n\n" + "="*80 + "\n\n"
+
+    return context
+
+
+def format_factsheet_chunks_for_context(chunks: List[dict]) -> str:
+    """
+    Format factsheet results from vector search with deduplication.
+
+    Strategy:
+    - Group chunks by factsheet_id (deduplication)
+    - For each unique factsheet, show:
+      1. All matching sections with their relevance scores
+      2. Complete factsheet JSON data (stored once)
+
+    This prevents returning the same factsheet multiple times while showing
+    which sections were semantically relevant.
+
+    Args:
+        chunks: List of chunk documents from vector search (with full_document field)
+
+    Returns:
+        Formatted string with deduplicated factsheet data
+    """
+    if not chunks:
+        return ""
+
+    import json
+
+    # Step 1: Deduplicate by factsheet_id
+    factsheet_map = {}  # factsheet_id -> {full_doc, sections: [(section_type, score, text)]}
+
+    for chunk in chunks:
+        factsheet_id = chunk.get("factsheet_id", "unknown")
+        section_type = chunk.get("section_type", "unknown")
+        score = chunk.get("score", 0.0)
+        chunk_text = chunk.get("text", "")
+        full_doc = chunk.get("full_document", {})
+
+        if factsheet_id not in factsheet_map:
+            factsheet_map[factsheet_id] = {
+                "full_document": full_doc,
+                "fund_name": chunk.get("fund_name", "Unknown"),
+                "report_date": chunk.get("report_date"),
+                "sections": []
+            }
+
+        # Add this section to the list
+        factsheet_map[factsheet_id]["sections"].append({
+            "section_type": section_type,
+            "score": score,
+            "text": chunk_text[:200]  # Preview only
+        })
+
+    # Step 2: Format deduplicated results
+    context = "=== RELEVANT FACTSHEET DATA (RAG Retrieved) ===\n\n"
+    context += f"Found {len(factsheet_map)} unique factsheet(s) with {len(chunks)} relevant section(s)\n\n"
+
+    for idx, (factsheet_id, data) in enumerate(factsheet_map.items(), 1):
+        full_doc = data["full_document"]
+        fund_name = data["fund_name"]
+        sections = data["sections"]
+
+        # Sort sections by score (highest first)
+        sections.sort(key=lambda x: x["score"], reverse=True)
+
+        # Get report date for label
+        report_date = data["report_date"] or full_doc.get("reportDate")
+        if isinstance(report_date, datetime):
+            report_date_str = report_date.strftime("%b %d, %Y")
+        else:
+            report_date_str = "Unknown Date"
+
+        # Get filename
+        file_path = full_doc.get("file_path", "")
+        if file_path:
+            import os
+            filename = os.path.basename(file_path)
+        else:
+            filename = "Unknown File"
+
+        # Header with matching sections info
+        context += f"[Factsheet {idx}] {fund_name} - {filename} ({report_date_str})\n"
+        context += f"Matching Sections ({len(sections)}):\n"
+        for sec in sections:
+            context += f"  - {sec['section_type']} (relevance: {sec['score']:.4f})\n"
+        context += "\n"
+
+        # Convert full document to JSON
+        factsheet_copy = {}
+        for key, value in full_doc.items():
+            if isinstance(value, datetime):
+                factsheet_copy[key] = value.isoformat()
+            elif key == 'file_path':
+                import os
+                factsheet_copy[key] = os.path.basename(value) if value else 'Unknown File'
+            else:
+                factsheet_copy[key] = value
+
+        context += "Complete Factsheet Data:\n"
         context += json.dumps(factsheet_copy, indent=2, ensure_ascii=False)
         context += "\n\n" + "="*80 + "\n\n"
 
@@ -1157,23 +1413,24 @@ def ask_gemini_with_rag_streaming(
             # No Meeting Notes data source selected, no RAG
             yield ('STATUS', False)
 
-        # Fetch factsheet data if selected
+        # Fetch factsheet data if selected (using RAG vector search)
         if "Factsheet" in data_sources:
             step_start = time.time()
-            print("[FACTSHEET] Fetching factsheet data...")
-            factsheets = fetch_factsheets(
+            print("[FACTSHEET] Performing RAG vector search on factsheets...")
+            factsheet_chunks = perform_factsheet_vector_search(
+                question=question,
                 start_date=start_date,
                 end_date=end_date,
                 selected_funds=selected_funds,
-                limit=20
+                top_k=50
             )
             factsheet_time = time.time() - step_start
-            if factsheets:
-                factsheet_context = format_factsheets_for_context(factsheets)
+            if factsheet_chunks:
+                factsheet_context = format_factsheet_chunks_for_context(factsheet_chunks)
                 context += factsheet_context
-                print(f"[TIMING] Factsheet fetch: {factsheet_time:.3f}s ({len(factsheets)} factsheets)")
+                print(f"[TIMING] Factsheet RAG: {factsheet_time:.3f}s ({len(factsheet_chunks)} chunks)")
             else:
-                print(f"[TIMING] Factsheet fetch: {factsheet_time:.3f}s (no factsheets found)")
+                print(f"[TIMING] Factsheet RAG: {factsheet_time:.3f}s (no chunks found)")
 
         # Web Search will be handled by Google Search Grounding tool (configured below)
         use_google_search = "Web Search" in data_sources
@@ -1518,8 +1775,8 @@ async def get_all_funds():
 
         # Get funds from fund reports
         reports_db = mongo_client["fund_reports"]
-        reports_collection = reports_db["factsheets"]
-        report_funds = reports_collection.distinct("UniqueName")
+        reports_collection = reports_db["factsheets - Alex"]
+        report_funds = reports_collection.distinct("UniqueName", {"is_fund_factsheet": "y"})
 
         # Get funds from transcripts
         transcripts_collection = meetings_db["transcripts"]
