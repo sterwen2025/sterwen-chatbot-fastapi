@@ -1138,7 +1138,7 @@ const ChatBot = () => {
                 borderRadius: 16,
                 padding: '6px',
                 display: 'flex',
-                alignItems: 'flex-end',
+                alignItems: 'center',
                 transition: 'all 0.3s',
                 boxShadow: '0 2px 8px rgba(0,0,0,0.04)'
               }}>

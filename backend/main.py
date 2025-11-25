@@ -885,7 +885,7 @@ def perform_factsheet_vector_search(
             print(f"[FACTSHEET] Filtering by date: {start_date} to {end_date}")
 
         if selected_funds and len(selected_funds) > 0:
-            cosmos_filter["fund_name"] = {"$in": selected_funds}
+            cosmos_filter["UniqueName"] = {"$in": selected_funds}
             print(f"[FACTSHEET] Filtering by funds: {selected_funds}")
 
         filter_time = time.time() - filter_start
@@ -913,6 +913,7 @@ def perform_factsheet_vector_search(
                         "chunk_id": 1,
                         "factsheet_id": 1,
                         "text": 1,
+                        "UniqueName": 1,
                         "fund_name": 1,
                         "report_date": 1,
                         "file_path": 1,
@@ -941,6 +942,7 @@ def perform_factsheet_vector_search(
                         "chunk_id": 1,
                         "factsheet_id": 1,
                         "text": 1,
+                        "UniqueName": 1,
                         "fund_name": 1,
                         "report_date": 1,
                         "file_path": 1,
