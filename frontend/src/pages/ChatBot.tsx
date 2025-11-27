@@ -30,7 +30,8 @@ import {
   PlusOutlined,
   HistoryOutlined,
   SearchOutlined,
-  GlobalOutlined
+  GlobalOutlined,
+  StopOutlined
 } from '@ant-design/icons';
 import { API_ENDPOINTS } from '../config/api';
 import dayjs, { Dayjs } from 'dayjs';
@@ -70,6 +71,7 @@ const ChatBot = () => {
 
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Session ID management - stored in localStorage for persistence
   const [sessionId] = useState<string>(() => {
@@ -342,6 +344,10 @@ const ChatBot = () => {
 
     setConversation(prev => [...prev, tempMessage]);
 
+    // Create AbortController for this request
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
     try {
       const response = await fetch(API_ENDPOINTS.chatAskStream, {
         method: 'POST',
@@ -357,7 +363,8 @@ const ChatBot = () => {
             answer: msg.answer
           })),
           model: model
-        })
+        }),
+        signal: abortController.signal
       });
 
       if (!response.ok || !response.body) {
@@ -384,8 +391,14 @@ const ChatBot = () => {
               if (jsonData.hasOwnProperty('searching')) {
                 if (jsonData.searching) {
                   setSearchStatus('Finding relevant information...');
-                } else {
-                  setSearchStatus('');
+                }
+                // Don't clear on searching: false - let 'generating' event handle the transition
+              }
+
+              // Handle generating status event
+              if (jsonData.hasOwnProperty('generating')) {
+                if (jsonData.generating) {
+                  setSearchStatus('Generating response...');
                 }
               }
 
@@ -438,11 +451,17 @@ const ChatBot = () => {
         }
       }
     } catch (error) {
+      // Don't show error message if it was aborted by user
+      if (error instanceof Error && error.name === 'AbortError') {
+        console.log('Request was aborted by user');
+        return; // handleStop already handled the cleanup
+      }
       message.error('Failed to get answer. Please try again.');
       console.error('Error asking question:', error);
       // Remove the temporary message if there was an error
       setConversation(prev => prev.slice(0, -1));
     } finally {
+      abortControllerRef.current = null; // Clear the abort controller
       setLoading(false);
       setSearchStatus(''); // Clear search status
       setThinkingSummary(''); // Clear thinking summary
@@ -462,6 +481,35 @@ const ChatBot = () => {
     } catch (error) {
       console.error('Error clearing conversation:', error);
       message.error('Failed to clear conversation');
+    }
+  };
+
+  // Stop the current request
+  const handleStop = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+      setLoading(false);
+      setSearchStatus('');
+      setThinkingSummary('');
+      // Update the last message to show it was stopped
+      setConversation(prev => {
+        if (prev.length === 0) return prev;
+        const newConv = [...prev];
+        const lastMsg = newConv[newConv.length - 1];
+        if (!lastMsg.answer) {
+          // No answer yet, remove the message entirely
+          return prev.slice(0, -1);
+        } else {
+          // Partial answer, mark it as stopped
+          newConv[newConv.length - 1] = {
+            ...lastMsg,
+            answer: lastMsg.answer + '\n\n*[Response stopped by user]*'
+          };
+          return newConv;
+        }
+      });
+      message.info('Request stopped');
     }
   };
 
@@ -850,7 +898,7 @@ const ChatBot = () => {
                 </Space>
               </div>
             ) : (
-              <Space direction="vertical" style={{ width: '100%', maxWidth: 900, margin: '0 auto' }} size={16}>
+              <Space direction="vertical" style={{ width: '100%', maxWidth: 1400, margin: '0 auto' }} size={16}>
                 {conversation.map((msg, index) => (
                   <div key={index} style={{ width: '100%' }}>
                     {/* User Question */}
@@ -1163,28 +1211,56 @@ const ChatBot = () => {
                   }}
                   disabled={loading || dataSources.length === 0}
                 />
-                <Button
-                  type="primary"
-                  icon={<SendOutlined />}
-                  onClick={handleAsk}
-                  loading={loading}
-                  style={{
-                    background: loading ? '#d1d5db' : (question.trim() && dataSources.length > 0 ? 'linear-gradient(135deg, #0066a1 0%, #0088cc 100%)' : '#d1d5db'),
-                    borderColor: 'transparent',
-                    height: 44,
-                    width: 44,
-                    borderRadius: 12,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    flexShrink: 0,
-                    marginLeft: 10,
-                    boxShadow: (question.trim() && dataSources.length > 0 && !loading) ? '0 4px 12px rgba(0,102,161,0.25)' : 'none',
-                    transition: 'all 0.2s',
-                    transform: (question.trim() && dataSources.length > 0 && !loading) ? 'scale(1)' : 'scale(0.95)'
-                  }}
-                  disabled={!question.trim() || dataSources.length === 0}
-                />
+                {/* Stop/Send button */}
+                {loading ? (
+                  <Button
+                    type="primary"
+                    onClick={handleStop}
+                    style={{
+                      background: '#1a1a1a',
+                      borderColor: 'transparent',
+                      height: 44,
+                      width: 44,
+                      borderRadius: 22,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flexShrink: 0,
+                      marginLeft: 10,
+                      boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+                      transition: 'all 0.2s'
+                    }}
+                  >
+                    <div style={{
+                      width: 14,
+                      height: 14,
+                      backgroundColor: '#ffffff',
+                      borderRadius: 2
+                    }} />
+                  </Button>
+                ) : (
+                  <Button
+                    type="primary"
+                    icon={<SendOutlined />}
+                    onClick={handleAsk}
+                    style={{
+                      background: (question.trim() && dataSources.length > 0) ? 'linear-gradient(135deg, #0066a1 0%, #0088cc 100%)' : '#d1d5db',
+                      borderColor: 'transparent',
+                      height: 44,
+                      width: 44,
+                      borderRadius: 12,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flexShrink: 0,
+                      marginLeft: 10,
+                      boxShadow: (question.trim() && dataSources.length > 0) ? '0 4px 12px rgba(0,102,161,0.25)' : 'none',
+                      transition: 'all 0.2s',
+                      transform: (question.trim() && dataSources.length > 0) ? 'scale(1)' : 'scale(0.95)'
+                    }}
+                    disabled={!question.trim() || dataSources.length === 0}
+                  />
+                )}
               </div>
               {dataSources.length === 0 && (
                 <Text type="secondary" style={{

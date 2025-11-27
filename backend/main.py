@@ -13,11 +13,13 @@ from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime, date
 from pymongo import MongoClient
+from bson import Regex as BsonRegex  # For Cosmos DB compatible regex
 import calendar
 import os
 import json
 import uuid
 import re
+import math
 from google import genai
 from dotenv import load_dotenv
 from embedding_service import EmbeddingService
@@ -615,17 +617,6 @@ def perform_vector_search(
         db_time = time.time() - db_start
         print(f"[TIME] DB Connection: {db_time:.3f}s")
 
-        # STEP 0: Check if query matches any fund names (hybrid search boost)
-        fund_match_start = time.time()
-        matched_funds = find_matching_fund_names(question, db)
-        if matched_funds and not selected_funds:
-            # If we found matching fund names and no funds were explicitly selected,
-            # boost results by adding fund filter
-            print(f"[HYBRID SEARCH] Boosting search with matched funds: {matched_funds}")
-            selected_funds = matched_funds
-        fund_match_time = time.time() - fund_match_start
-        print(f"[TIME] Fund Name Matching: {fund_match_time:.3f}s")
-
         # STEP 1: Generate embedding
         embedding_start = time.time()
         embedding_service = EmbeddingService(GEMINI_API_KEY)
@@ -723,19 +714,57 @@ def perform_vector_search(
         pipeline_time = time.time() - pipeline_start
         print(f"[TIME] Pipeline Building: {pipeline_time:.3f}s")
 
-        # STEP 4: Execute vector search
-        search_start = time.time()
-        results = list(chunks_collection.aggregate(pipeline))
-        search_time = time.time() - search_start
-        print(f"[TIME] Vector Search Execution: {search_time:.3f}s")
-        print(f"Found {len(results)} results")
+        # STEP 4 & 5: Execute vector search and BM25 in PARALLEL
+        from concurrent.futures import ThreadPoolExecutor
+        import asyncio
 
-        # Results are already limited by k in cosmosSearch
+        def run_vector_search():
+            return list(chunks_collection.aggregate(pipeline))
+
+        def run_bm25_search():
+            return perform_bm25_search_on_meeting_chunks(
+                query=question,
+                chunks_collection=chunks_collection,
+                start_date=start_date,
+                end_date=end_date,
+                limit=top_k
+            )
+
+        parallel_start = time.time()
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            vector_future = executor.submit(run_vector_search)
+            bm25_future = executor.submit(run_bm25_search)
+            vector_results = vector_future.result()
+            bm25_results = bm25_future.result()
+        parallel_time = time.time() - parallel_start
+        print(f"[TIME] Parallel Search (Vector + BM25): {parallel_time:.3f}s")
+        print(f"[VECTOR] Found {len(vector_results)} results")
+        print(f"[BM25] Found {len(bm25_results)} results")
+
+        # STEP 6: Merge results using RRF (Reciprocal Rank Fusion)
+        merge_start = time.time()
+        if bm25_results:
+            results = merge_vector_and_bm25_results(
+                vector_results=vector_results,
+                bm25_results=bm25_results,
+                k=60,
+                vector_weight=0.5,
+                bm25_weight=0.5,
+                top_k=top_k
+            )
+            print(f"[HYBRID-MEETING] Merged vector + BM25 results")
+        else:
+            # Fallback to vector-only if BM25 fails
+            results = vector_results
+            print(f"[HYBRID-MEETING] Using vector-only (BM25 returned no results)")
+        merge_time = time.time() - merge_start
+        print(f"[TIME] Merge: {merge_time:.3f}s")
+
         print(f"Returning {len(results)} chunks")
 
         total_time = time.time() - total_start
         print(f"[TIME] TOTAL TIME: {total_time:.3f}s")
-        print(f"[TIME] Breakdown - DB: {db_time:.3f}s | FundMatch: {fund_match_time:.3f}s | Embedding: {embedding_time:.3f}s | Filter: {filter_time:.3f}s | Pipeline: {pipeline_time:.3f}s | Search: {search_time:.3f}s")
+        print(f"[TIME] Breakdown - DB: {db_time:.3f}s | Embedding: {embedding_time:.3f}s | Filter: {filter_time:.3f}s | Pipeline: {pipeline_time:.3f}s | Parallel(Vec+BM25): {parallel_time:.3f}s | Merge: {merge_time:.3f}s")
 
         return results
 
@@ -826,6 +855,416 @@ def fetch_factsheets(
         traceback.print_exc()
         return []
 
+class BM25:
+    """
+    BM25 (Best Matching 25) implementation for text retrieval.
+    This is a ranking function used to estimate relevance of documents to a search query.
+    """
+
+    def __init__(self, k1: float = 1.5, b: float = 0.75):
+        """
+        Initialize BM25 with parameters.
+
+        Args:
+            k1: Term frequency saturation parameter (default 1.5)
+            b: Length normalization parameter (default 0.75)
+        """
+        self.k1 = k1
+        self.b = b
+        self.corpus_size = 0
+        self.avgdl = 0
+        self.doc_freqs = {}  # Document frequency for each term
+        self.doc_lens = []   # Length of each document
+        self.tokenized_corpus = []
+
+    def _tokenize(self, text: str) -> List[str]:
+        """Simple tokenization: lowercase and split on non-alphanumeric."""
+        if not text:
+            return []
+        # Convert to lowercase and split on non-alphanumeric characters
+        tokens = re.findall(r'\b\w+\b', text.lower())
+        return tokens
+
+    def fit(self, corpus: List[str]):
+        """
+        Fit BM25 on a corpus of documents.
+
+        Args:
+            corpus: List of document strings
+        """
+        self.corpus_size = len(corpus)
+        self.tokenized_corpus = [self._tokenize(doc) for doc in corpus]
+        self.doc_lens = [len(doc) for doc in self.tokenized_corpus]
+        self.avgdl = sum(self.doc_lens) / self.corpus_size if self.corpus_size > 0 else 0
+
+        # Calculate document frequencies
+        self.doc_freqs = {}
+        for tokenized_doc in self.tokenized_corpus:
+            unique_terms = set(tokenized_doc)
+            for term in unique_terms:
+                self.doc_freqs[term] = self.doc_freqs.get(term, 0) + 1
+
+    def _score_document(self, query_tokens: List[str], doc_idx: int) -> float:
+        """Calculate BM25 score for a single document."""
+        score = 0.0
+        doc_tokens = self.tokenized_corpus[doc_idx]
+        doc_len = self.doc_lens[doc_idx]
+
+        # Count term frequencies in document
+        term_freqs = {}
+        for token in doc_tokens:
+            term_freqs[token] = term_freqs.get(token, 0) + 1
+
+        for term in query_tokens:
+            if term not in term_freqs:
+                continue
+
+            # Term frequency in document
+            tf = term_freqs[term]
+
+            # Document frequency (how many docs contain this term)
+            df = self.doc_freqs.get(term, 0)
+
+            # IDF (Inverse Document Frequency)
+            # Using the standard BM25 IDF formula
+            idf = math.log((self.corpus_size - df + 0.5) / (df + 0.5) + 1)
+
+            # BM25 term score
+            numerator = tf * (self.k1 + 1)
+            denominator = tf + self.k1 * (1 - self.b + self.b * (doc_len / self.avgdl))
+            score += idf * (numerator / denominator)
+
+        return score
+
+    def search(self, query: str, top_k: int = 50) -> List[tuple]:
+        """
+        Search the corpus with a query.
+
+        Args:
+            query: Search query string
+            top_k: Number of top results to return
+
+        Returns:
+            List of (doc_idx, score) tuples sorted by score descending
+        """
+        query_tokens = self._tokenize(query)
+
+        if not query_tokens:
+            return []
+
+        # Score all documents
+        scores = []
+        for doc_idx in range(self.corpus_size):
+            score = self._score_document(query_tokens, doc_idx)
+            if score > 0:  # Only include documents with positive scores
+                scores.append((doc_idx, score))
+
+        # Sort by score descending
+        scores.sort(key=lambda x: x[1], reverse=True)
+
+        return scores[:top_k]
+
+
+def perform_bm25_search_on_chunks(
+    query: str,
+    chunks_collection,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    selected_funds: Optional[List[str]] = None,
+    limit: int = 100
+) -> List[dict]:
+    """
+    Perform BM25 search on factsheet chunks.
+
+    Args:
+        query: Search query
+        chunks_collection: MongoDB collection
+        start_date: Start date filter
+        end_date: End date filter
+        selected_funds: List of fund names to filter
+        limit: Maximum candidate documents to fetch for BM25
+
+    Returns:
+        List of matching chunk documents with bm25_score
+    """
+    import time
+    start_time = time.time()
+
+    try:
+        # Extract keywords from query for pre-filtering (words with 3+ chars)
+        query_tokens = re.findall(r'\b\w{3,}\b', query.lower())
+        print(f"[BM25] Query tokens: {query_tokens}")
+
+        # Build filter query
+        filter_query = {}
+
+        if start_date and end_date:
+            from datetime import datetime as dt
+            start_dt = dt.fromisoformat(start_date)
+            end_dt = dt.fromisoformat(end_date)
+            filter_query["report_date"] = {"$gte": start_dt, "$lte": end_dt}
+
+        if selected_funds and len(selected_funds) > 0:
+            filter_query["UniqueName"] = {"$in": selected_funds}
+
+        # Pre-filter using BsonRegex - works on Cosmos DB (unlike $regex dict syntax)
+        # Build OR pattern to match any query token
+        fetch_start = time.time()
+        if query_tokens:
+            # Use BsonRegex with 'i' flag for case-insensitive search
+            pattern = '|'.join(re.escape(token) for token in query_tokens)
+            filter_query["text"] = BsonRegex(pattern, 'i')
+            print(f"[BM25] Regex pattern: {pattern}")
+
+        candidates = list(chunks_collection.find(
+            filter_query,
+            {
+                "chunk_id": 1,
+                "factsheet_id": 1,
+                "text": 1,
+                "UniqueName": 1,
+                "fund_name": 1,
+                "report_date": 1,
+                "file_path": 1,
+                "chunk_type": 1,
+                "full_document": 1,
+                "_id": 1
+            }
+        ).limit(limit * 20))  # Limit for speed, but get enough for good BM25
+        fetch_time = time.time() - fetch_start
+
+        if not candidates:
+            print(f"[BM25] No candidates found")
+            return []
+
+        print(f"[BM25] Fetched {len(candidates)} candidate chunks in {fetch_time:.3f}s")
+
+        # Build corpus from chunk texts
+        corpus = [chunk.get("text", "") for chunk in candidates]
+
+        # Initialize and fit BM25
+        bm25_start = time.time()
+        bm25 = BM25(k1=1.5, b=0.75)
+        bm25.fit(corpus)
+        bm25_fit_time = time.time() - bm25_start
+
+        # Search
+        search_start = time.time()
+        results = bm25.search(query, top_k=limit)
+        bm25_search_time = time.time() - search_start
+
+        # Map results back to chunk documents
+        scored_chunks = []
+        for doc_idx, score in results:
+            chunk = candidates[doc_idx].copy()
+            chunk["bm25_score"] = score
+            scored_chunks.append(chunk)
+
+        total_time = time.time() - start_time
+        print(f"[BM25] Found {len(scored_chunks)} results | Fetch: {fetch_time:.3f}s | Fit: {bm25_fit_time:.3f}s | Search: {bm25_search_time:.3f}s | Total: {total_time:.3f}s")
+
+        return scored_chunks
+
+    except Exception as e:
+        print(f"[BM25] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+
+def perform_bm25_search_on_meeting_chunks(
+    query: str,
+    chunks_collection,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    limit: int = 100
+) -> List[dict]:
+    """
+    Perform BM25 search on meeting note chunks (no fund filter).
+
+    Args:
+        query: Search query
+        chunks_collection: MongoDB MeetingChunks collection
+        start_date: Start date filter (YYYY-MM-DD string)
+        end_date: End date filter (YYYY-MM-DD string)
+        limit: Maximum candidate documents to fetch for BM25
+
+    Returns:
+        List of matching chunk documents with bm25_score
+    """
+    import time
+    start_time = time.time()
+
+    try:
+        # Stopwords to filter out common words
+        stopwords = {'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one', 'our', 'out', 'has', 'have', 'been', 'were', 'they', 'this', 'that', 'with', 'will', 'your', 'from', 'what', 'when', 'where', 'which', 'their', 'there', 'about', 'would', 'could', 'should', 'tell', 'know', 'more', 'some', 'into', 'than', 'them', 'then', 'these', 'those', 'being', 'other'}
+
+        # Extract keywords from query for pre-filtering (words with 3+ chars, no stopwords)
+        all_tokens = re.findall(r'\b\w{3,}\b', query.lower())
+        query_tokens = [t for t in all_tokens if t not in stopwords]
+        print(f"[BM25-MEETING] Query tokens (filtered): {query_tokens}")
+
+        # Build filter query (date only, no fund filter for broader keyword search)
+        filter_query = {}
+
+        if start_date and end_date:
+            filter_query["meeting_date"] = {
+                "$gte": start_date,
+                "$lte": end_date
+            }
+
+        # Pre-filter using BsonRegex - works on Cosmos DB (unlike $regex dict syntax)
+        # Build OR pattern to match any query token
+        fetch_start = time.time()
+        if query_tokens:
+            # Use BsonRegex with 'i' flag for case-insensitive search
+            pattern = '|'.join(re.escape(token) for token in query_tokens)
+            filter_query["text"] = BsonRegex(pattern, 'i')
+            print(f"[BM25-MEETING] Regex pattern: {pattern}")
+
+        candidates = list(chunks_collection.find(
+            filter_query,
+            {
+                "chunk_id": 1,
+                "meeting_id": 1,
+                "text": 1,
+                "fund_name": 1,
+                "manager": 1,
+                "contact_person": 1,
+                "meeting_date": 1,
+                "strategy": 1,
+                "importance": 1,
+                "chunk_type": 1,
+                "_id": 1
+            }
+        ).limit(limit * 20))  # Limit for speed, but get enough for good BM25
+        fetch_time = time.time() - fetch_start
+
+        if not candidates:
+            print(f"[BM25-MEETING] No candidates found")
+            return []
+
+        print(f"[BM25-MEETING] Fetched {len(candidates)} candidate chunks in {fetch_time:.3f}s")
+
+        # Build corpus from chunk texts
+        corpus = [chunk.get("text", "") for chunk in candidates]
+
+        # Initialize and fit BM25
+        bm25_start = time.time()
+        bm25 = BM25(k1=1.5, b=0.75)
+        bm25.fit(corpus)
+        bm25_fit_time = time.time() - bm25_start
+
+        # Search
+        search_start = time.time()
+        results = bm25.search(query, top_k=limit)
+        bm25_search_time = time.time() - search_start
+
+        # Map results back to chunk documents
+        scored_chunks = []
+        for doc_idx, score in results:
+            chunk = candidates[doc_idx].copy()
+            chunk["bm25_score"] = score
+            scored_chunks.append(chunk)
+
+        total_time = time.time() - start_time
+        print(f"[BM25-MEETING] Found {len(scored_chunks)} results | Fetch: {fetch_time:.3f}s | Fit: {bm25_fit_time:.3f}s | Search: {bm25_search_time:.3f}s | Total: {total_time:.3f}s")
+
+        return scored_chunks
+
+    except Exception as e:
+        print(f"[BM25-MEETING] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+
+def merge_vector_and_bm25_results(
+    vector_results: List[dict],
+    bm25_results: List[dict],
+    k: int = 60,
+    vector_weight: float = 0.5,
+    bm25_weight: float = 0.5,
+    top_k: int = 50
+) -> List[dict]:
+    """
+    Merge vector and BM25 search results using Reciprocal Rank Fusion (RRF).
+
+    RRF is a simple but effective method that doesn't require score normalization.
+    Formula: RRF_score = sum(1 / (k + rank)) for each result list
+
+    Args:
+        vector_results: Results from vector search (with 'score' field)
+        bm25_results: Results from BM25 search (with 'bm25_score' field)
+        k: RRF constant (default 60, standard value from literature)
+        vector_weight: Weight for vector results
+        bm25_weight: Weight for BM25 results
+        top_k: Number of results to return
+
+    Returns:
+        Merged and re-ranked results
+    """
+    rrf_scores = {}
+    chunk_data = {}
+
+    # Process vector results
+    for rank, result in enumerate(vector_results):
+        chunk_key = str(result.get("chunk_id") or result.get("_id"))
+        rrf_score = vector_weight * (1.0 / (k + rank + 1))
+
+        if chunk_key not in rrf_scores:
+            rrf_scores[chunk_key] = 0
+            chunk_data[chunk_key] = result.copy()
+
+        rrf_scores[chunk_key] += rrf_score
+        chunk_data[chunk_key]["vector_rank"] = rank + 1
+        chunk_data[chunk_key]["vector_score"] = result.get("score", 0)
+
+    # Process BM25 results
+    for rank, result in enumerate(bm25_results):
+        chunk_key = str(result.get("chunk_id") or result.get("_id"))
+        rrf_score = bm25_weight * (1.0 / (k + rank + 1))
+
+        if chunk_key not in rrf_scores:
+            rrf_scores[chunk_key] = 0
+            chunk_data[chunk_key] = result.copy()
+
+        rrf_scores[chunk_key] += rrf_score
+        chunk_data[chunk_key]["bm25_rank"] = rank + 1
+        chunk_data[chunk_key]["bm25_score"] = result.get("bm25_score", 0)
+
+    # Sort by combined RRF score
+    sorted_chunks = sorted(
+        [(key, rrf_scores[key]) for key in rrf_scores],
+        key=lambda x: x[1],
+        reverse=True
+    )
+
+    # Build final results
+    merged_results = []
+    for chunk_key, rrf_score in sorted_chunks[:top_k]:
+        result = chunk_data[chunk_key]
+        result["hybrid_score"] = rrf_score
+        result["score"] = rrf_score  # Override for downstream compatibility
+        merged_results.append(result)
+
+    # Log fusion results
+    print(f"[HYBRID] RRF merged {len(vector_results)} vector + {len(bm25_results)} BM25 -> {len(merged_results)} final")
+
+    # Show top 5 results with details
+    for i, r in enumerate(merged_results[:5]):
+        fund = r.get("fund_name", "Unknown")[:20]
+        v_rank = r.get("vector_rank", "-")
+        b_rank = r.get("bm25_rank", "-")
+        v_score = r.get("vector_score", 0)
+        b_score = r.get("bm25_score", 0)
+        text_preview = r.get("text", "")[:50].replace("\n", " ")
+        print(f"[HYBRID] #{i+1}: {fund} | VecRank:{v_rank} BM25Rank:{b_rank} | VecScore:{v_score:.3f} BM25:{b_score:.2f} | RRF:{r['hybrid_score']:.4f}")
+        print(f"         Text: {text_preview}...")
+
+    return merged_results
+
+
 def perform_factsheet_vector_search(
     question: str,
     start_date: Optional[str] = None,
@@ -834,7 +1273,8 @@ def perform_factsheet_vector_search(
     top_k: int = 50
 ) -> List[dict]:
     """
-    Use RAG vector search to find relevant factsheet chunks.
+    Use HYBRID search (Vector + BM25) to find relevant factsheet chunks.
+    Combines semantic understanding (vector) with exact keyword matching (BM25).
 
     Args:
         question: User's question
@@ -848,6 +1288,7 @@ def perform_factsheet_vector_search(
     """
     try:
         import time
+        import math
 
         total_start = time.time()
 
@@ -958,22 +1399,54 @@ def perform_factsheet_vector_search(
 
         # STEP 4: Execute vector search
         search_start = time.time()
-        results = list(chunks_collection.aggregate(pipeline))
+        vector_results = list(chunks_collection.aggregate(pipeline))
         search_time = time.time() - search_start
         print(f"[FACTSHEET TIME] Vector Search Execution: {search_time:.3f}s")
-        print(f"[FACTSHEET] Found {len(results)} results")
+        print(f"[FACTSHEET] Vector search found {len(vector_results)} results")
 
-        # Results are already limited by k in cosmosSearch
+        # STEP 5: Execute BM25 search in parallel
+        bm25_start = time.time()
+        bm25_results = perform_bm25_search_on_chunks(
+            query=question,
+            chunks_collection=chunks_collection,
+            start_date=start_date,
+            end_date=end_date,
+            selected_funds=selected_funds,
+            limit=top_k * 2  # Fetch more for better BM25 coverage
+        )
+        bm25_time = time.time() - bm25_start
+        print(f"[FACTSHEET TIME] BM25 Search: {bm25_time:.3f}s")
+
+        # STEP 6: Merge results using Reciprocal Rank Fusion (RRF)
+        merge_start = time.time()
+        if bm25_results:
+            # Hybrid search: merge vector + BM25 with RRF
+            # Using 50/50 weight - balanced between semantic and keyword matching
+            results = merge_vector_and_bm25_results(
+                vector_results=vector_results,
+                bm25_results=bm25_results,
+                vector_weight=0.5,  # 50% weight for semantic search
+                bm25_weight=0.5,    # 50% weight for keyword matching
+                top_k=top_k
+            )
+            print(f"[FACTSHEET] HYBRID search enabled (Vector + BM25)")
+        else:
+            # Fallback to pure vector if BM25 failed
+            results = vector_results[:top_k]
+            print(f"[FACTSHEET] Pure vector search (BM25 unavailable)")
+        merge_time = time.time() - merge_start
+        print(f"[FACTSHEET TIME] Result Merging: {merge_time:.3f}s")
+
         print(f"[FACTSHEET] Returning {len(results)} chunks")
 
         total_time = time.time() - total_start
         print(f"[FACTSHEET TIME] TOTAL TIME: {total_time:.3f}s")
-        print(f"[FACTSHEET TIME] Breakdown - DB: {db_time:.3f}s | Embedding: {embedding_time:.3f}s | Filter: {filter_time:.3f}s | Pipeline: {pipeline_time:.3f}s | Search: {search_time:.3f}s")
+        print(f"[FACTSHEET TIME] Breakdown - DB: {db_time:.3f}s | Embedding: {embedding_time:.3f}s | Filter: {filter_time:.3f}s | Pipeline: {pipeline_time:.3f}s | VectorSearch: {search_time:.3f}s | BM25: {bm25_time:.3f}s | Merge: {merge_time:.3f}s")
 
         return results
 
     except Exception as e:
-        print(f"[FACTSHEET] Error in vector search: {str(e)}")
+        print(f"[FACTSHEET] Error in hybrid search: {str(e)}")
         import traceback
         traceback.print_exc()
         return []
@@ -1112,8 +1585,8 @@ def format_factsheet_chunks_for_context(chunks: List[dict]) -> str:
         else:
             filename = "Unknown File"
 
-        # Header with matching sections info
-        context += f"[Factsheet {idx}] {fund_name} - {filename} ({report_date_str})\n"
+        # Header with matching sections info - use descriptive label (fund name + date), not numbered index
+        context += f"[{fund_name} Factsheet ({report_date_str})] - {filename}\n"
         context += f"Matching Sections ({len(sections)}):\n"
         for sec in sections:
             context += f"  - {sec['section_type']} (relevance: {sec['score']:.4f})\n"
@@ -1325,6 +1798,9 @@ def ask_gemini_with_rag_streaming(
         print(f"[TIMING] Data sources: {data_sources}")
         print(f"{'='*80}\n")
 
+        # Send searching status immediately so user sees feedback right away
+        yield ('STATUS', True)
+
         print(f"[DEBUG] ask_gemini_with_rag_streaming called with data_sources: {data_sources}")
 
         # Prepare context (same as non-streaming version)
@@ -1485,6 +1961,13 @@ def ask_gemini_with_rag_streaming(
        - Keep link text concise (under 50 characters) but descriptive
        - DO NOT write web search analysis without citing the specific webpage links
        - If you cannot find sources to cite, state "No relevant web sources found" instead of writing unsourced content
+       - **CRITICAL - NUMERICAL DATA VERIFICATION**: Financial numbers and percentages are HIGHLY sensitive and must be directly verifiable
+         * When citing ANY number (stock prices, percentages, returns, AUM, etc.), the user MUST be able to see that EXACT number on the linked page
+         * Example: If you state "AppLovin rose 64%", when the user clicks the link, they must see "64%" or the specific data that supports this claim
+         * DO NOT cite numbers that are not directly visible or quoted in the source page
+         * If you cannot verify a specific number in the source, DO NOT include it - use qualitative language instead ("rose significantly") or omit the claim
+         * Add the exact quote from the source page in parentheses after the link if the number is buried in text
+         * Example: "AppLovin stock increased [source link] (page states: 'APP gained 64% in October 2025')"
    - Web searches MUST be relevant to entities found in internal data
 """
         else:
@@ -1514,6 +1997,7 @@ Instructions:
 7. Cite all sources with specifics (meeting dates, URLs, fund names, manager names)
 8. Use clear section headers to distinguish internal data from web search results
 9. Give detailed, comprehensive responses - do not be brief
+10. **CITATION STYLE - IMPORTANT**: When citing factsheets, ALWAYS use the fund name and date (e.g., "Infinitum Master Fund Factsheet (Sep 01, 2025)"). NEVER use generic numbered references like "Factsheet 1" or "(Source: Factsheet 16)" - these are meaningless to users
 
 Available data sources: {', '.join(data_sources)}
 
@@ -1560,6 +2044,9 @@ Now provide a comprehensive, detailed answer to the question above."""
                 config = types.GenerateContentConfig(
                     temperature=1
                 )
+
+        # Send status: generating response
+        yield ('GENERATING', True)
 
         # Send to Gemini with streaming
         api_call_time = time.time() - step_start
@@ -1889,7 +2376,10 @@ async def ask_question_stream(request: ChatRequest):
 
         def generate():
             try:
-                print("[DEBUG] Starting generate() function")
+                print("[DEBUG] ========== GENERATE FUNCTION STARTED ==========")
+                print(f"[DEBUG] Question: {request.question}")
+                print(f"[DEBUG] Data sources: {request.data_sources}")
+                print("[DEBUG] About to call ask_gemini_with_rag_streaming...")
                 for item in ask_gemini_with_rag_streaming(
                     question=request.question,
                     data_sources=request.data_sources,
@@ -1904,6 +2394,9 @@ async def ask_question_stream(request: ChatRequest):
                     if isinstance(item, tuple) and item[0] == 'STATUS':
                         # Send search status event
                         yield f"data: {json.dumps({'searching': item[1]})}\n\n"
+                    elif isinstance(item, tuple) and item[0] == 'GENERATING':
+                        # Send generating status event
+                        yield f"data: {json.dumps({'generating': item[1]})}\n\n"
                     elif isinstance(item, str) and '__THOUGHT__' in item:
                         # Extract thought content and send as thinking event
                         thought_content = item.replace('__THOUGHT__', '').replace('__END_THOUGHT__', '')
