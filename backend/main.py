@@ -1498,20 +1498,15 @@ def format_factsheets_for_context(factsheets: List[dict]) -> str:
 
 def format_factsheet_chunks_for_context(chunks: List[dict]) -> str:
     """
-    Format factsheet results from vector search with deduplication.
+    Format factsheet results from vector search using chunk text only.
 
     Strategy:
     - Group chunks by factsheet_id (deduplication)
-    - Fetch full factsheet data from source collection using factsheet_id
-    - For each unique factsheet, show:
-      1. All matching sections with their relevance scores
-      2. Complete factsheet JSON data (fetched once per unique factsheet)
-
-    This prevents returning the same factsheet multiple times while showing
-    which sections were semantically relevant.
+    - Use only the chunk text (no full document fetch)
+    - For each unique factsheet, show all matching sections with their text
 
     Args:
-        chunks: List of chunk documents from vector search (factsheet_id used to fetch full doc)
+        chunks: List of chunk documents from vector search
 
     Returns:
         Formatted string with deduplicated factsheet data
@@ -1519,11 +1514,8 @@ def format_factsheet_chunks_for_context(chunks: List[dict]) -> str:
     if not chunks:
         return ""
 
-    import json
-    from bson import ObjectId
-
-    # Step 1: Deduplicate by factsheet_id and collect unique IDs
-    factsheet_map = {}  # factsheet_id -> {sections: [(section_type, score, text)], fund_name, report_date}
+    # Step 1: Deduplicate by factsheet_id and collect sections
+    factsheet_map = {}  # factsheet_id -> {sections: [...], fund_name, report_date}
 
     for chunk in chunks:
         factsheet_id = chunk.get("factsheet_id", "unknown")
@@ -1539,37 +1531,20 @@ def format_factsheet_chunks_for_context(chunks: List[dict]) -> str:
                 "sections": []
             }
 
-        # Add this section to the list
+        # Add this section with full text
         factsheet_map[factsheet_id]["sections"].append({
             "section_type": section_type,
             "score": score,
-            "text": chunk_text[:200]  # Preview only
+            "text": chunk_text  # Full text, not truncated
         })
 
-    # Step 2: Fetch full factsheet documents from source collection
-    # Only fetch for unique factsheet_ids to minimize DB calls
-    db = mongo_client["fund_reports"]
-    factsheets_collection = db["factsheets - Alex"]
+    print(f"[FACTSHEET] Found {len(factsheet_map)} unique factsheets from {len(chunks)} chunks")
 
-    full_docs = {}  # factsheet_id -> full document
-    for factsheet_id in factsheet_map.keys():
-        if factsheet_id and factsheet_id != "unknown":
-            try:
-                # factsheet_id is stored as string of ObjectId
-                full_doc = factsheets_collection.find_one({"_id": ObjectId(factsheet_id)})
-                if full_doc:
-                    full_docs[factsheet_id] = full_doc
-            except Exception as e:
-                print(f"[FACTSHEET] Error fetching full doc for {factsheet_id}: {e}")
-
-    print(f"[FACTSHEET] Fetched {len(full_docs)} full documents for {len(factsheet_map)} unique factsheets")
-
-    # Step 3: Format deduplicated results
+    # Step 2: Format results
     context = "=== RELEVANT FACTSHEET DATA (RAG Retrieved) ===\n\n"
     context += f"Found {len(factsheet_map)} unique factsheet(s) with {len(chunks)} relevant section(s)\n\n"
 
     for idx, (factsheet_id, data) in enumerate(factsheet_map.items(), 1):
-        full_doc = full_docs.get(factsheet_id, {})
         fund_name = data["fund_name"]
         sections = data["sections"]
 
@@ -1577,51 +1552,30 @@ def format_factsheet_chunks_for_context(chunks: List[dict]) -> str:
         sections.sort(key=lambda x: x["score"], reverse=True)
 
         # Get report date for label
-        report_date = data["report_date"] or full_doc.get("reportDate")
+        report_date = data["report_date"]
         if isinstance(report_date, datetime):
             report_date_str = report_date.strftime("%b %d, %Y")
         else:
-            report_date_str = "Unknown Date"
+            report_date_str = str(report_date) if report_date else "Unknown Date"
 
         # Get filename
-        file_path = data.get("file_path") or full_doc.get("file_path", "")
+        file_path = data.get("file_path", "")
         if file_path:
             import os
             filename = os.path.basename(file_path)
         else:
             filename = "Unknown File"
 
-        # Header with matching sections info
+        # Header
         context += f"[{fund_name} Factsheet ({report_date_str})] - {filename}\n"
-        context += f"Matching Sections ({len(sections)}):\n"
+        context += f"Sections ({len(sections)}):\n\n"
+
+        # Show each section's full text
         for sec in sections:
-            context += f"  - {sec['section_type']} (relevance: {sec['score']:.4f})\n"
-        context += "\n"
+            context += f"--- {sec['section_type']} (relevance: {sec['score']:.4f}) ---\n"
+            context += f"{sec['text']}\n\n"
 
-        # Convert full document to JSON (if available)
-        if full_doc:
-            factsheet_copy = {}
-            for key, value in full_doc.items():
-                if key == '_id':
-                    continue  # Skip MongoDB _id
-                elif isinstance(value, datetime):
-                    factsheet_copy[key] = value.isoformat()
-                elif key == 'file_path':
-                    import os
-                    factsheet_copy[key] = os.path.basename(value) if value else 'Unknown File'
-                else:
-                    factsheet_copy[key] = value
-
-            context += "Complete Factsheet Data:\n"
-            context += json.dumps(factsheet_copy, indent=2, ensure_ascii=False)
-        else:
-            # Fallback: show available chunk data if full doc not found
-            context += "Complete Factsheet Data: (full document not available)\n"
-            context += f"Fund: {fund_name}, Date: {report_date_str}\n"
-            for sec in sections:
-                context += f"Section ({sec['section_type']}): {sec['text']}...\n"
-
-        context += "\n\n" + "="*80 + "\n\n"
+        context += "="*80 + "\n\n"
 
     return context
 
