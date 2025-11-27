@@ -1,385 +1,446 @@
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         CHATBOT LOGIC FLOW                                   │
-│                    (Conditional Branches & Decision Points)                  │
-│                          ** VERIFIED AGAINST CODE **                         │
-└─────────────────────────────────────────────────────────────────────────────┘
+================================================================================
+                         CHATBOT RAG LOGIC FLOWCHART
+                    (Verified against main.py - Nov 2024)
+================================================================================
 
-START: User submits question
-│
-├─► Receive Request with:
-│   • question: string
-│   • data_sources: ["Meeting Notes", "Factsheet", "Web Search"]
-│   • start_date, end_date: optional filters (YYYY-MM-DD format)
-│   • selected_funds: optional list of fund names
-│   • conversation_history: optional array of previous exchanges
-│
-▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ STEP 1: Initialize Context                                                  │
-│ context = "Available Data Sources:\n\n"                                     │
-│ use_google_search = False                                                   │
-└─────────────────────────────────────────────────────────────────────────────┘
-│
-▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ DECISION POINT 1: Check if "Meeting Notes" in data_sources                  │
-└─────────────────────────────────────────────────────────────────────────────┘
-│
-├─► YES: "Meeting Notes" selected
-│   │
-│   ├─► STEP 2A: RAG PIPELINE EXECUTION
-│   │   │
-│   │   ├─► STEP 2A-1: Generate embedding for question
-│   │   │   • Call: embedding_service.generate_embedding(question)
-│   │   │   • Task type: "RETRIEVAL_QUERY"
-│   │   │   • Uses: Gemini embedding model
-│   │   │   • Returns: 768-dimensional vector (query_embedding)
-│   │   │
-│   │   ├─► STEP 2A-2: Build filter criteria (BEFORE vector search)
-│   │   │   • Create cosmos_filter = {} dictionary
-│   │   │   │
-│   │   │   ├─► DECISION POINT 1A: Date filters provided?
-│   │   │   │   │
-│   │   │   │   ├─► YES: start_date AND end_date both provided
-│   │   │   │   │   └─► Add to cosmos_filter:
-│   │   │   │   │       {"meeting_date": {"$gte": start_date, "$lte": end_date}}
-│   │   │   │   │
-│   │   │   │   └─► NO: start_date OR end_date missing
-│   │   │   │       └─► No date constraint added to filter
-│   │   │   │
-│   │   │   ├─► DECISION POINT 1B: Fund filters provided?
-│   │   │   │   │
-│   │   │   │   ├─► YES: selected_funds list provided AND not empty
-│   │   │   │   │   └─► Add to cosmos_filter:
-│   │   │   │   │       {"fund_name": {"$in": selected_funds}}
-│   │   │   │   │
-│   │   │   │   └─► NO: selected_funds empty or null
-│   │   │   │       └─► No fund constraint added to filter
-│   │   │
-│   │   ├─► STEP 2A-3: Perform FILTERED vector search in MongoDB
-│   │   │   • Database: "Meetings"
-│   │   │   • Collection: "MeetingChunks"
-│   │   │   • Build pipeline with $search stage:
-│   │   │     {
-│   │   │       "$search": {
-│   │   │         "cosmosSearch": {
-│   │   │           "vector": query_embedding,
-│   │   │           "path": "embedding",
-│   │   │           "k": 100,                    ← Retrieve top 100 chunks
-│   │   │           "filter": cosmos_filter,     ← Pre-filter BEFORE vector search
-│   │   │           "exact": True                ← ENN (Exact Nearest Neighbor)
-│   │   │         },
-│   │   │         "returnStoredSource": True
-│   │   │       }
-│   │   │     }
-│   │   │   • Vector search operates ONLY on pre-filtered document subset
-│   │   │   • Cosine similarity on embedding field
-│   │   │   • ENN used for filtered searches (50% faster per MS docs)
-│   │   │
-│   │   ├─► DECISION POINT 1C: Did we find any chunks?
-│   │   │   │
-│   │   │   ├─► YES: rag_chunks.length > 0
-│   │   │   │   │
-│   │   │   │   └─► Format and add to context:
-│   │   │   │       context += "=== MEETING NOTES (RAG Retrieved) ===\n\n"
-│   │   │   │       For each chunk in rag_chunks:
-│   │   │   │         • Date: meeting_date (YYYY-MM-DD format)
-│   │   │   │         • Fund: fund_name
-│   │   │   │         • Manager: manager
-│   │   │   │         • Chunk Type: chunk_type
-│   │   │   │         • Content: text
-│   │   │   │         • Relevance Score: score (formatted to 4 decimals)
-│   │   │   │         • Separator: "\n---\n\n"
-│   │   │   │
-│   │   │   └─► NO: rag_chunks.length == 0
-│   │   │       └─► Log: "No RAG chunks found"
-│   │   │           context remains unchanged (no meeting notes added)
-│   │
-│   └─► Yield STATUS event to frontend (True during search, False when complete)
-│
-└─► NO: "Meeting Notes" not selected
-    └─► Skip RAG pipeline entirely
-        Yield STATUS=False event
-
-▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ DECISION POINT 2: Check if "Factsheet" in data_sources                      │
-└─────────────────────────────────────────────────────────────────────────────┘
-│
-├─► YES: "Factsheet" selected
-│   │
-│   ├─► STEP 3A: FACTSHEET QUERY EXECUTION
-│   │   │
-│   │   ├─► Call fetch_factsheets() function with parameters:
-│   │   │   • start_date: start_date (optional)
-│   │   │   • end_date: end_date (optional)
-│   │   │   • selected_funds: selected_funds (optional)
-│   │   │   • limit: 20 documents                    ← Maximum 20 factsheets
-│   │   │
-│   │   ├─► Query MongoDB factsheet collection:
-│   │   │   • Database: "meeting_notes"
-│   │   │   • Collection: "factsheet"
-│   │   │
-│   │   ├─► Build query filter:
-│   │   │   │
-│   │   │   ├─► DECISION POINT 2A: Date filters provided?
-│   │   │   │   │
-│   │   │   │   ├─► YES: start_date AND end_date provided
-│   │   │   │   │   └─► Add to query: {"date": {"$gte": start_date, "$lte": end_date}}
-│   │   │   │   │
-│   │   │   │   └─► NO: No date filter applied
-│   │   │   │
-│   │   │   ├─► DECISION POINT 2B: Fund filters provided?
-│   │   │   │   │
-│   │   │   │   ├─► YES: selected_funds list provided and not empty
-│   │   │   │   │   └─► Add to query: {"fund_name": {"$in": selected_funds}}
-│   │   │   │   │
-│   │   │   │   └─► NO: No fund filter applied
-│   │   │
-│   │   ├─► Execute query with:
-│   │   │   • Sort: date descending (newest first)
-│   │   │   • Limit: 20 documents
-│   │   │
-│   │   ├─► DECISION POINT 2C: Did we find any factsheets?
-│   │   │   │
-│   │   │   ├─► YES: factsheets.length > 0
-│   │   │   │   │
-│   │   │   │   └─► Format and add to context:
-│   │   │   │       Call format_factsheets_for_context(factsheets)
-│   │   │   │       context += formatted factsheet data
-│   │   │   │       Each factsheet includes:
-│   │   │   │         • Date: date field
-│   │   │   │         • Fund: fund_name
-│   │   │   │         • Content: factsheet_content
-│   │   │   │
-│   │   │   └─► NO: factsheets.length == 0
-│   │   │       └─► Log: "[FACTSHEET] No factsheets found"
-│   │   │           context remains unchanged
-│   │
-│   └─► Continue to next step
-│
-└─► NO: "Factsheet" not selected
-    └─► Skip factsheet query entirely
-
-▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ DECISION POINT 3: Check if "Web Search" in data_sources                     │
-└─────────────────────────────────────────────────────────────────────────────┘
-│
-├─► YES: "Web Search" selected
-│   │
-│   ├─► STEP 4A: SET WEB SEARCH FLAG
-│   │   │
-│   │   └─► use_google_search = True
-│   │       Log: "[WEB SEARCH] Google Search Grounding enabled"
-│   │
-│   └─► Add context-aware web search instructions to prompt:
-│       │
-│       └─► Instructions include (lines 1116-1133):
-│           • FIRST: Read and analyze ALL internal data (RAG + Factsheet)
-│           • THEN: Extract entities (funds, managers, companies)
-│           • Search for SPECIFIC entities mentioned in internal data
-│           • Example: Search "Cooper Square fund" NOT just "Cooper"
-│           • CITATION REQUIREMENTS:
-│             - Cite EVERY point with specific sources
-│             - Format: "Meeting with John Doe, Sept 15, 2025"
-│             - Use inline citations throughout
-│           • TWO-SECTION RESPONSE STRUCTURE:
-│             - **Section 1**: Internal Data Analysis (with inline citations)
-│             - **Section 2**: Web Search Results (with titles and URLs)
-│             - Include both analysis AND sources in web section
-│
-└─► NO: "Web Search" not selected
-    │
-    └─► use_google_search = False
+USER SENDS QUESTION
         │
-        └─► Add instructions:
-            "3. Only use the internal data provided below. Web search is not enabled."
+        ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                         STEP 1: INPUT COLLECTION                              │
+│                                                                               │
+│   Frontend collects:                                                          │
+│   • question: string (user's query)                                           │
+│   • data_sources: ["Meeting Notes", "Factsheet", "Web Search"]               │
+│   • start_date, end_date: optional filters (YYYY-MM-DD format)               │
+│   • selected_funds: optional list of fund names                               │
+│   • conversation_history: array of previous {question, answer} pairs          │
+│   • model: "gemini-2.5-flash" | "gemini-2.5-pro" | "gemini-3-low-thinking"   │
+│            | "gemini-3-high-thinking"                                         │
+│                                                                               │
+│   POST /api/chat/ask/stream → ask_gemini_with_rag_streaming()                │
+└───────────────────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                    STEP 2: SMART RAG STRATEGY DECISION                        │
+│                    (main.py lines 269-434)                                    │
+│                                                                               │
+│   ┌─────────────────────────────────────────────────────────────────────┐    │
+│   │  2.1 INTENT CLASSIFICATION - classify_intent()                      │    │
+│   │      (Rule-based, no LLM call)                                      │    │
+│   │                                                                      │    │
+│   │  Transform patterns checked:                                         │    │
+│   │  'summarize', 'summary', 'list', 'compare', 'contrast',             │    │
+│   │  'tell me more', 'explain', 'elaborate', 'what do you mean',        │    │
+│   │  'can you clarify', 'in other words', 'why', 'how',                 │    │
+│   │  'what about the', 'regarding the', 'about the above'               │    │
+│   │                                                                      │    │
+│   │  IF pattern found AND conversation_history >= 2:                     │    │
+│   │      → Return 'NO_RAG' (skip search, use existing context)          │    │
+│   │  ELSE:                                                               │    │
+│   │      → Return 'NEW_QUERY' (need search)                             │    │
+│   └─────────────────────────────────────────────────────────────────────┘    │
+│                              │                                                │
+│                              ▼                                                │
+│   ┌─────────────────────────────────────────────────────────────────────┐    │
+│   │  2.2 SCOPE CHANGE DETECTION - detect_scope_change()                 │    │
+│   │      (Only if Intent = NEW_QUERY)                                   │    │
+│   │                                                                      │    │
+│   │  FAST PATH (no LLM call):                                            │    │
+│   │  Compare current vs previous filters:                                │    │
+│   │    current = {start_date, end_date, sorted(selected_funds)}          │    │
+│   │    previous = cached scope from rag_cache                            │    │
+│   │                                                                      │    │
+│   │  IF filters changed:                                                 │    │
+│   │      → Return TRUE (scope changed, skip LLM - saves 200-800ms)      │    │
+│   │                                                                      │    │
+│   │  SLOW PATH (LLM call):                                               │    │
+│   │  IF filters same, call Gemini to classify topic:                     │    │
+│   │                                                                      │    │
+│   │  Prompt: "Previous: {prev_question}"                                 │    │
+│   │          "Current: {curr_question}"                                  │    │
+│   │          "Are these SAME or DIFFERENT topics?"                       │    │
+│   │                                                                      │    │
+│   │  IF response = "DIFFERENT":                                          │    │
+│   │      → Return TRUE (topic changed)                                   │    │
+│   │  ELSE:                                                               │    │
+│   │      → Return FALSE (same topic, can reuse cache)                   │    │
+│   └─────────────────────────────────────────────────────────────────────┘    │
+│                              │                                                │
+│                              ▼                                                │
+│   ┌─────────────────────────────────────────────────────────────────────┐    │
+│   │  2.3 STRATEGY SELECTION - get_rag_strategy()                        │    │
+│   │                                                                      │    │
+│   │  Cache key: "{start_date}_{end_date}_{sorted(funds)}"               │    │
+│   │                                                                      │    │
+│   │  Decision Tree:                                                      │    │
+│   │                                                                      │    │
+│   │  Intent = NO_RAG?                                                    │    │
+│   │      YES → Strategy = NO_RAG                                        │    │
+│   │            (Skip all searches, ~1-2s response)                      │    │
+│   │                                                                      │    │
+│   │  Scope changed = TRUE?                                               │    │
+│   │      YES → Strategy = RAG_NEW_QUERY                                 │    │
+│   │            (Perform new hybrid search, ~4-7s)                        │    │
+│   │                                                                      │    │
+│   │  Scope changed = FALSE?                                              │    │
+│   │      YES → Strategy = RAG_REUSE                                     │    │
+│   │            (Use cached chunks, ~2-3s)                               │    │
+│   └─────────────────────────────────────────────────────────────────────┘    │
+└───────────────────────────────────────────────────────────────────────────────┘
+        │
+        ├────────────────────┬────────────────────┬────────────────────┐
+        │                    │                    │                    │
+        ▼                    ▼                    ▼                    │
+┌───────────────┐    ┌───────────────┐    ┌───────────────┐           │
+│   NO_RAG      │    │  RAG_REUSE    │    │ RAG_NEW_QUERY │           │
+│               │    │               │    │               │           │
+│ • Skip search │    │ • Check cache │    │ • Run hybrid  │           │
+│ • Use conv    │    │ • Hit → use   │    │   search      │           │
+│   history     │    │ • Miss → run  │    │ • Cache       │           │
+│               │    │   new search  │    │   results     │           │
+└───────┬───────┘    └───────┬───────┘    └───────┬───────┘           │
+        │                    │                    │                    │
+        └────────────────────┴────────────────────┴────────────────────┘
+                                          │
+                                          ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                    STEP 3: HYBRID SEARCH                                      │
+│                    (If Meeting Notes selected AND strategy != NO_RAG)          │
+│                    (main.py lines 584-773)                                    │
+│                                                                               │
+│   ┌─────────────────────────────────────────────────────────────────────┐    │
+│   │  Executed in PARALLEL using ThreadPoolExecutor(max_workers=2)       │    │
+│   └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                               │
+│   ┌─────────────────────────────┐    ┌─────────────────────────────┐         │
+│   │    THREAD 1: VECTOR SEARCH  │    │    THREAD 2: BM25 SEARCH    │         │
+│   │    perform_vector_search()  │    │    perform_bm25_search_on_  │         │
+│   │                             │    │    meeting_chunks()         │         │
+│   │                             │    │                             │         │
+│   │  1. Generate query embedding│    │  1. Tokenize query          │         │
+│   │     embedding_service.      │    │     - Remove stopwords      │         │
+│   │     generate_embedding()    │    │     - Extract 3+ char words │         │
+│   │     • Model: gemini-        │    │                             │         │
+│   │       embedding-001         │    │  2. Build regex pattern     │         │
+│   │     • Dimensions: 768       │    │     pattern = 'word1|word2' │         │
+│   │     • Task: RETRIEVAL_QUERY │    │     Use BsonRegex for       │         │
+│   │                             │    │     Cosmos DB compatibility │         │
+│   │  2. Build Cosmos filter:    │    │                             │         │
+│   │     IF date filter:         │    │  3. Fetch candidates        │         │
+│   │       meeting_date: {       │    │     - Query chunks matching │         │
+│   │         $gte: start_date,   │    │       any token             │         │
+│   │         $lte: end_date      │    │     - Limit: top_k * 20     │         │
+│   │       }                     │    │                             │         │
+│   │     IF fund filter:         │    │  4. Fit BM25 model          │         │
+│   │       fund_name: {          │    │     - k1 = 1.5 (TF sat)     │         │
+│   │         $in: selected_funds │    │     - b = 0.75 (length norm)│         │
+│   │       }                     │    │                             │         │
+│   │                             │    │  5. Score all candidates    │         │
+│   │  3. Execute $search:        │    │     BM25 = IDF * TF /       │         │
+│   │     cosmosSearch {          │    │       (TF + k1*(1-b+b*L/A)) │         │
+│   │       vector: embedding,    │    │                             │         │
+│   │       path: "embedding",    │    │  6. Return top-k by score   │         │
+│   │       k: 100,               │    │                             │         │
+│   │       filter: cosmos_filter,│    │                             │         │
+│   │       exact: true (ENN)     │    │                             │         │
+│   │     }                       │    │                             │         │
+│   │                             │    │                             │         │
+│   │  4. Return ranked results   │    │                             │         │
+│   │     with similarity scores  │    │                             │         │
+│   └──────────────┬──────────────┘    └──────────────┬──────────────┘         │
+│                  │                                  │                         │
+│                  └──────────────┬───────────────────┘                         │
+│                                 │                                             │
+│                                 ▼                                             │
+│   ┌─────────────────────────────────────────────────────────────────────┐    │
+│   │  RECIPROCAL RANK FUSION (RRF) - merge_vector_and_bm25_results()    │    │
+│   │  (main.py lines 1182-1265)                                          │    │
+│   │                                                                      │    │
+│   │  Parameters:                                                         │    │
+│   │    k = 60 (RRF constant from literature)                             │    │
+│   │    vector_weight = 0.5 (50% weight for semantic search)              │    │
+│   │    bm25_weight = 0.5 (50% weight for keyword matching)               │    │
+│   │    top_k = 50 (final results to return)                              │    │
+│   │                                                                      │    │
+│   │  Algorithm:                                                          │    │
+│   │  FOR each chunk in vector_results:                                   │    │
+│   │      rrf_score += vector_weight * (1 / (k + rank + 1))              │    │
+│   │                                                                      │    │
+│   │  FOR each chunk in bm25_results:                                     │    │
+│   │      rrf_score += bm25_weight * (1 / (k + rank + 1))                │    │
+│   │                                                                      │    │
+│   │  Benefits:                                                           │    │
+│   │  • Chunks in BOTH lists get boosted                                  │    │
+│   │  • No score normalization needed                                     │    │
+│   │  • Handles different scoring scales naturally                        │    │
+│   │                                                                      │    │
+│   │  Output: Top 50 chunks sorted by hybrid_score                        │    │
+│   └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                               │
+│   Same hybrid search applied to:                                              │
+│   • MeetingChunks collection (if "Meeting Notes" selected)                   │
+│   • FactsheetChunks collection (if "Factsheet" selected)                     │
+└───────────────────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                    STEP 4: FACTSHEET SEARCH                                   │
+│                    (If "Factsheet" in data_sources)                           │
+│                    (main.py lines 1268-1452)                                  │
+│                                                                               │
+│   Same hybrid search pattern:                                                 │
+│                                                                               │
+│   1. Vector Search on FactsheetChunks                                         │
+│      • Collection: fund_reports.FactsheetChunks                               │
+│      • Filter by: report_date range, UniqueName list                         │
+│                                                                               │
+│   2. BM25 Search on FactsheetChunks                                           │
+│      • perform_bm25_search_on_chunks()                                        │
+│                                                                               │
+│   3. RRF Merge (50/50 weighting)                                              │
+│                                                                               │
+│   4. Deduplication by factsheet_id:                                           │
+│      • Group chunks by factsheet_id                                           │
+│      • Show matching sections with scores                                     │
+│      • Include complete factsheet JSON once per unique factsheet              │
+│                                                                               │
+│   Output format:                                                              │
+│   [Fund Name Factsheet (Date)] - filename.pdf                                 │
+│   Matching Sections: performance (0.82), holdings (0.71)                      │
+│   Complete Factsheet Data: {JSON}                                             │
+└───────────────────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                    STEP 5: CONTEXT BUILDING                                   │
+│                    (main.py lines 1806-1911)                                  │
+│                                                                               │
+│   context = "Available Data Sources:\n\n"                                     │
+│                                                                               │
+│   IF Meeting Notes chunks found:                                              │
+│   ┌─────────────────────────────────────────────────────────────────────┐    │
+│   │  === MEETING NOTES (RAG Retrieved) ===                              │    │
+│   │                                                                      │    │
+│   │  For each chunk (up to 100):                                         │    │
+│   │    Date: {meeting_date}                                              │    │
+│   │    Fund: {fund_name}                                                 │    │
+│   │    Manager: {manager}                                                │    │
+│   │    Chunk Type: {chunk_type}                                          │    │
+│   │    Content: {text}                                                   │    │
+│   │    Relevance Score: {score:.4f}                                      │    │
+│   │    ---                                                               │    │
+│   └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                               │
+│   IF Factsheet chunks found:                                                  │
+│   ┌─────────────────────────────────────────────────────────────────────┐    │
+│   │  === RELEVANT FACTSHEET DATA (RAG Retrieved) ===                    │    │
+│   │  Found {N} unique factsheet(s) with {M} relevant section(s)         │    │
+│   │                                                                      │    │
+│   │  [Fund Name Factsheet (Date)] - filename.pdf                         │    │
+│   │  Matching Sections (N):                                              │    │
+│   │    - section_type (relevance: 0.8234)                                │    │
+│   │  Complete Factsheet Data: {JSON}                                     │    │
+│   └─────────────────────────────────────────────────────────────────────┘    │
+└───────────────────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                    STEP 6: PROMPT CONSTRUCTION                                │
+│                    (main.py lines 1923-2007)                                  │
+│                                                                               │
+│   full_prompt = ""                                                            │
+│                                                                               │
+│   IF conversation_history exists:                                             │
+│       full_prompt += "Previous conversation:\n\n"                             │
+│       FOR item in conversation_history[-3:]:  # Last 3 only                   │
+│           full_prompt += f"User: {question}\n"                                │
+│           full_prompt += f"Assistant: {answer}\n\n"                           │
+│       full_prompt += "---\n\n"                                                │
+│                                                                               │
+│   full_prompt += f"Question: {question}\n\n"                                  │
+│                                                                               │
+│   full_prompt += "Instructions:\n"                                            │
+│   1. FORMATTING: Use ONLY markdown, NO HTML tags                              │
+│   2. DATE AWARENESS: State dates of data referenced                           │
+│   3. Read internal data (meeting notes + factsheets) FIRST                    │
+│   4. Web search instructions (if enabled):                                    │
+│      - Context-aware searches using entities from internal data               │
+│      - Cite ALL web sources with clickable markdown links                     │
+│      - Structure: Section 1 (Internal) + Section 2 (Web)                      │
+│   5. Synthesize all information                                               │
+│   6. Thorough explanations with context                                       │
+│   7. Cite all sources with specifics                                          │
+│   8. Use clear section headers                                                │
+│   9. Give detailed, comprehensive responses                                   │
+│   10. CITATION STYLE: Use "[Fund Name Factsheet (Date)]"                      │
+│       NEVER use generic "Factsheet 1" or "Source: Factsheet 16"               │
+│                                                                               │
+│   full_prompt += f"Available data sources: {data_sources}\n\n"                │
+│   full_prompt += f"Internal Data:\n{context}\n\n"                             │
+│   full_prompt += "Now provide a comprehensive answer."                        │
+└───────────────────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                    STEP 7: GEMINI API CALL                                    │
+│                    (main.py lines 2017-2067)                                  │
+│                                                                               │
+│   Model Selection:                                                            │
+│   ┌─────────────────────────────────────────────────────────────────────┐    │
+│   │  Frontend model       │  Actual API model           │  Config       │    │
+│   │  ─────────────────────┼─────────────────────────────┼─────────────  │    │
+│   │  "gemini-2.5-flash"   │  gemini-2.5-flash           │  default      │    │
+│   │  "gemini-2.5-pro"     │  gemini-2.5-pro             │  default      │    │
+│   │  "gemini-3-low-think" │  gemini-3-pro-preview       │  think=low    │    │
+│   │  "gemini-3-high-think"│  gemini-3-pro-preview       │  think=default│    │
+│   └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                               │
+│   IF "Web Search" in data_sources:                                            │
+│       config = GenerateContentConfig(                                         │
+│           tools=[Tool(google_search=GoogleSearch())],                         │
+│           temperature=1,                                                      │
+│           thinking_config=thinking_config  # if applicable                    │
+│       )                                                                       │
+│   ELSE:                                                                       │
+│       config = GenerateContentConfig(                                         │
+│           temperature=1,                                                      │
+│           thinking_config=thinking_config  # if applicable                    │
+│       )                                                                       │
+│                                                                               │
+│   response = gemini_client.models.generate_content_stream(                    │
+│       model=actual_model,                                                     │
+│       contents=full_prompt,                                                   │
+│       config=config                                                           │
+│   )                                                                           │
+└───────────────────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                    STEP 8: STREAMING RESPONSE                                 │
+│                    (main.py lines 2048-2099)                                  │
+│                                                                               │
+│   Backend yields Server-Sent Events (SSE):                                    │
+│                                                                               │
+│   yield ('STATUS', True)     →  data: {"searching": true}                     │
+│   [perform hybrid searches]                                                   │
+│   yield ('STATUS', False)    →  data: {"searching": false}                    │
+│   yield ('GENERATING', True) →  data: {"generating": true}                    │
+│                                                                               │
+│   FOR each chunk in Gemini response:                                          │
+│       IF chunk has thought (Gemini 3 thinking):                               │
+│           yield ('THINKING', text)  →  data: {"thinking": "analyzing..."}    │
+│       ELIF chunk has text:                                                    │
+│           yield text                →  data: {"content": "Based on..."}      │
+│                                                                               │
+│   yield ('DONE', True)       →  data: {"done": true}                          │
+│                                                                               │
+│   Frontend handles:                                                           │
+│   • "searching: true"  → Show "Finding relevant information..."               │
+│   • "generating: true" → Show "Generating response..."                        │
+│   • "thinking"         → Show thinking summary (Gemini 3 only)                │
+│   • "content"          → Append to answer, render with ReactMarkdown          │
+│   • "done"             → Save to conversation history                         │
+└───────────────────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+    RESPONSE DISPLAYED TO USER
 
-▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ STEP 5: BUILD FULL PROMPT                                                   │
-└─────────────────────────────────────────────────────────────────────────────┘
-│
-├─► full_prompt = ""  (initialize empty string)
-│
-├─► DECISION POINT 4: Check if conversation_history exists and not empty
-│   │
-│   ├─► YES: conversation_history is not null AND length > 0
-│   │   │
-│   │   └─► Add conversation history to prompt (lines 1106-1111):
-│   │       full_prompt += "Previous conversation:\n\n"
-│   │       For item in conversation_history[-3:]:     ← Last 3 exchanges only
-│   │         full_prompt += "User: {question}\n"
-│   │         full_prompt += "Assistant: {answer}\n\n"
-│   │       full_prompt += "---\n\n"
-│   │
-│   └─► NO: conversation_history is null or empty
-│       └─► Skip conversation history section
-│           Start with fresh conversation (no context from previous exchanges)
-│
-├─► Add current question and instructions (lines 1139-1156):
-│   • Question: {question}
-│   • Instructions (8 numbered points)
-│   • Web search instructions (if enabled)
-│   • Available data sources list
-│   • Internal Data: {context} (RAG + Factsheet data)
-│
-▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ STEP 6: CONFIGURE GEMINI MODEL                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-│
-├─► Import: from google.genai import types
-│
-├─► DECISION POINT 5: use_google_search == True?
-│   │
-│   ├─► YES: Web search enabled (lines 1166-1173)
-│   │   │
-│   │   └─► Configure Gemini with Google Search Grounding:
-│   │       google_search_tool = types.Tool(google_search=types.GoogleSearch())
-│   │       config = types.GenerateContentConfig(
-│   │         tools=[google_search_tool],
-│   │         temperature=1                    ← Maximum creativity
-│   │       )
-│   │       │
-│   │       └─► Gemini will automatically:
-│   │           1. Read internal context (RAG + Factsheet)
-│   │           2. Identify entities mentioned in internal data
-│   │           3. Perform web searches for those specific entities
-│   │           4. Read and analyze web content
-│   │           5. Synthesize internal + web data
-│   │           6. Structure response in two sections
-│   │
-│   └─► NO: Web search disabled (lines 1174-1178)
-│       │
-│       └─► Configure Gemini without web search:
-│           config = types.GenerateContentConfig(
-│             temperature=1                    ← Maximum creativity
-│           )
-│           │
-│           └─► Gemini will:
-│               1. Read internal context only (RAG + Factsheet)
-│               2. Analyze provided data
-│               3. Generate response from internal data only
 
-▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ STEP 7: CALL GEMINI STREAMING API                                           │
-└─────────────────────────────────────────────────────────────────────────────┘
-│
-└─► Call Gemini API (lines 1181-1191):
-    • Model: "gemini-3-pro-preview"
-    • Method: gemini_client.models.generate_content_stream()
-    • Contents: full_prompt
-    • Config: config (with or without GoogleSearch tool)
-    • Returns: streaming response object
+================================================================================
+                         STOP BUTTON FLOW
+================================================================================
 
-▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ STEP 8: STREAM RESPONSE TO FRONTEND                                         │
-└─────────────────────────────────────────────────────────────────────────────┘
-│
-└─► For each chunk in response (lines 1193-1212):
-    │
-    ├─► DECISION POINT 6: Does chunk have text attribute?
-    │   │
-    │   ├─► YES: hasattr(chunk, 'text') AND chunk.text is not empty
-    │   │   │
-    │   │   └─► Yield chunk.text to frontend via SSE
-    │   │       • Backend yields text chunk
-    │   │       • FastAPI StreamingResponse sends to frontend
-    │   │       • Frontend receives chunk via EventSource
-    │   │       • ReactMarkdown renders incrementally
-    │   │
-    │   └─► NO: chunk.text missing or empty
-    │       │
-    │       └─► Try to extract from candidates (fallback):
-    │           For each candidate in chunk.candidates:
-    │             For each part in candidate.content.parts:
-    │               If part.text exists:
-    │                 Yield part.text
-
-▼
-END: Complete response delivered to frontend
+USER CLICKS STOP (ChatBot.tsx handleStop function)
+        │
+        ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│   1. abortControllerRef.current.abort()    // Cancel fetch request            │
+│   2. abortControllerRef.current = null     // Clear reference                 │
+│   3. setLoading(false)                     // Hide loading state              │
+│   4. setSearchStatus('')                   // Clear status message            │
+│   5. setThinkingSummary('')                // Clear thinking display          │
+│                                                                               │
+│   6. Update conversation:                                                     │
+│      IF no answer yet:                                                        │
+│          → Remove the question entirely from conversation                     │
+│      ELSE (partial answer exists):                                            │
+│          → Append "\n\n*[Response stopped by user]*" to answer               │
+│                                                                               │
+│   7. message.info('Request stopped')       // Show toast notification         │
+│                                                                               │
+│   Error handler catches AbortError and returns early (no error shown)         │
+└───────────────────────────────────────────────────────────────────────────────┘
 
 
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        SUMMARY OF CONDITIONS                                 │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│ WHEN RAG EXECUTES:                                                          │
-│   IF "Meeting Notes" in data_sources                                        │
-│     1. Generate question embedding (768-dimensional vector)                 │
-│     2. Build filter criteria FIRST (before vector search):                  │
-│        • Add date filter: IF start_date AND end_date provided               │
-│          cosmos_filter["meeting_date"] = {"$gte": start_date, "$lte": end_date}
-│        • Add fund filter: IF selected_funds provided AND not empty          │
-│          cosmos_filter["fund_name"] = {"$in": selected_funds}               │
-│     3. Perform FILTERED vector search in MongoDB:                           │
-│        • Database: "Meetings", Collection: "MeetingChunks"                  │
-│        • $search.cosmosSearch with filter parameter                         │
-│        • Pre-filters documents by date and fund BEFORE vector search        │
-│        • Vector search operates ONLY on filtered subset                     │
-│        • Uses ENN (Exact Nearest Neighbor) for efficiency                   │
-│        • k=100 (retrieve top 100 most similar chunks)                       │
-│     4. Format and add to context (if chunks found)                          │
-│                                                                              │
-│ WHEN FACTSHEET QUERY EXECUTES:                                              │
-│   IF "Factsheet" in data_sources                                            │
-│     1. Call fetch_factsheets() with limit=20                                │
-│     2. Build query filter:                                                  │
-│        • Add date filter: IF start_date AND end_date provided               │
-│        • Add fund filter: IF selected_funds provided AND not empty          │
-│     3. Query MongoDB:                                                       │
-│        • Database: "meeting_notes", Collection: "factsheet"                 │
-│        • Sort by: date descending (newest first)                            │
-│        • Limit: 20 documents maximum                                        │
-│     4. Format and add to context (if factsheets found)                      │
-│                                                                              │
-│ WHEN WEB SEARCH EXECUTES:                                                   │
-│   IF "Web Search" in data_sources                                           │
-│     1. Set use_google_search = True                                         │
-│     2. Add context-aware search instructions to prompt                      │
-│     3. Configure Gemini with GoogleSearch tool:                             │
-│        • types.Tool(google_search=types.GoogleSearch())                     │
-│        • Temperature: 1.0                                                   │
-│     4. Gemini automatically:                                                │
-│        • Reads internal context (RAG + Factsheet)                           │
-│        • Extracts entities mentioned                                        │
-│        • Searches web for specific entities (not generic terms)             │
-│        • Reads and analyzes web content                                     │
-│        • Synthesizes internal + web data                                    │
-│        • Structures response in two sections with inline citations          │
-│                                                                              │
-│ WHEN CONVERSATION HISTORY USED:                                             │
-│   IF conversation_history exists AND length > 0                             │
-│     • Include last 3 exchanges in prompt (conversation_history[-3:])        │
-│     • Format: "User: {question}\nAssistant: {answer}\n\n"                   │
-│     • Provides context continuity across conversation                       │
-│                                                                              │
-│ FILTER APPLICATION DETAILS:                                                 │
-│   DATE FILTERS:                                                             │
-│     • Applied when: start_date AND end_date both provided                   │
-│     • Format: YYYY-MM-DD (ISO string format)                                │
-│     • RAG: {"meeting_date": {"$gte": start_date, "$lte": end_date}}        │
-│     • Factsheet: {"date": {"$gte": start_date, "$lte": end_date}}          │
-│                                                                              │
-│   FUND FILTERS:                                                             │
-│     • Applied when: selected_funds list provided AND length > 0             │
-│     • RAG: {"fund_name": {"$in": selected_funds}}                           │
-│     • Factsheet: {"fund_name": {"$in": selected_funds}}                     │
-│                                                                              │
-│ KEY TECHNICAL DETAILS:                                                      │
-│   • Embedding Model: Gemini (via embedding_service)                         │
-│   • Embedding Dimension: 768                                                │
-│   • Embedding Task Type: "RETRIEVAL_QUERY"                                  │
-│   • Vector Search Method: cosmosSearch with ENN (Exact Nearest Neighbor)    │
-│   • RAG Chunk Limit: 100 (top_k=100)                                        │
-│   • Factsheet Limit: 20 documents                                           │
-│   • LLM Model: "gemini-3-pro-preview"                                       │
-│   • LLM Temperature: 1.0 (maximum creativity)                               │
-│   • Response Mode: Streaming (Server-Sent Events)                           │
-│   • Conversation History: Last 3 exchanges included                         │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+================================================================================
+                         CACHE STRUCTURE
+================================================================================
+
+rag_cache = {
+    "{start_date}_{end_date}_{sorted(funds)}": {
+        "scope": {
+            "question": "Original question text",
+            "start_date": "2024-01-01",
+            "end_date": "2024-12-31",
+            "funds": ["Fund A", "Fund B"]  // sorted list
+        },
+        "chunks": [...],       // Cached RAG results (vector + BM25 merged)
+        "timestamp": datetime  // When cached
+    }
+}
+
+Example cache key: "2024-01-01_2024-12-31_['AQR', 'Citadel']"
+
+
+================================================================================
+                      PERFORMANCE SUMMARY
+================================================================================
+
+| Scenario                  | Time     | What happens                      |
+|---------------------------|----------|-----------------------------------|
+| NO_RAG (follow-up)        | 1-2s     | Skip search, use conversation     |
+| RAG_REUSE (cache hit)     | 2-3s     | Use cached chunks                 |
+| RAG_NEW_QUERY             | 4-7s     | Full hybrid search                |
+| + Web Search              | +2-4s    | + Google Search Grounding         |
+
+Breakdown for RAG_NEW_QUERY:
+┌──────────────────────────┬───────────┐
+│ Phase                    │ Time      │
+├──────────────────────────┼───────────┤
+│ Embedding generation     │ 0.3-0.5s  │
+│ Vector search            │ 1-2s      │  ← Runs in parallel
+│ BM25 search              │ 0.5-1s    │  ← Runs in parallel
+│ RRF merge                │ 0.1s      │
+│ Context building         │ 0.1s      │
+│ Gemini API (first token) │ 1-3s      │
+├──────────────────────────┼───────────┤
+│ TOTAL                    │ 3-7s      │
+└──────────────────────────┴───────────┘
+
+
+================================================================================
+                      DATABASE COLLECTIONS
+================================================================================
+
+1. Meetings.MeetingChunks (Meeting Notes)
+   • chunk_id, meeting_id, chunk_index
+   • chunk_type: "notes_part" | "conclusion" | "full_notes"
+   • text: chunk content
+   • embedding: 768-dimensional vector
+   • fund_name, manager, meeting_date
+   • Vector index: cosmosSearch on "embedding" field
+
+2. fund_reports.FactsheetChunks (Factsheets)
+   • chunk_id, factsheet_id
+   • section_type: "performance" | "holdings" | "commentary"
+   • text: chunk content
+   • embedding: 768-dimensional vector
+   • UniqueName, fund_name, report_date
+   • full_document: complete factsheet JSON
+   • Vector index: cosmosSearch on "embedding" field
+
+3. Meetings.MeetingNotes (Fund names cache)
+   • Preloaded at startup into ALL_FUND_NAMES global
+   • Used for fund name matching in queries

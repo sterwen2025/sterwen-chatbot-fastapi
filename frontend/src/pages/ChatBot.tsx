@@ -407,6 +407,13 @@ const ChatBot = () => {
                 setThinkingSummary(jsonData.thinking);
               }
 
+              // Handle heartbeat event (keep-alive for Azure)
+              // Just acknowledge - no UI action needed
+              if (jsonData.hasOwnProperty('heartbeat')) {
+                console.log('[Heartbeat] Connection keep-alive received');
+                continue; // Skip to next iteration
+              }
+
               if (jsonData.content) {
                 // Clear search status and thinking summary when first content arrives
                 if (searchStatus) {
