@@ -714,9 +714,51 @@ const ChatBot = () => {
                 options={allFunds.map(f => ({ label: f, value: f }))}
                 value={selectedFunds}
                 onChange={setSelectedFunds}
-                maxTagCount={1}
+                maxTagCount={0}
+                maxTagPlaceholder={() => (
+                  <span style={{ color: '#666' }}>
+                    {selectedFunds.length} funds selected
+                  </span>
+                )}
                 showSearch
               />
+              {/* Selected funds tags */}
+              {selectedFunds.length > 0 && (
+                <div style={{
+                  marginTop: 8,
+                  maxHeight: 120,
+                  overflowY: 'auto',
+                  padding: '4px 0'
+                }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    {selectedFunds.map(fund => (
+                      <Tag
+                        key={fund}
+                        closable
+                        onClose={() => setSelectedFunds(selectedFunds.filter(f => f !== fund))}
+                        style={{
+                          margin: 0,
+                          fontSize: 12,
+                          padding: '2px 6px',
+                          lineHeight: '18px'
+                        }}
+                      >
+                        {fund}
+                      </Tag>
+                    ))}
+                  </div>
+                  {selectedFunds.length > 1 && (
+                    <Button
+                      type="link"
+                      size="small"
+                      onClick={() => setSelectedFunds([])}
+                      style={{ padding: '4px 0', height: 'auto', fontSize: 12 }}
+                    >
+                      Clear all
+                    </Button>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Live Stats */}
