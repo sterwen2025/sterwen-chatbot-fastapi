@@ -863,6 +863,7 @@ def perform_vector_search(
                 chunks_collection=chunks_collection,
                 start_date=start_date,
                 end_date=end_date,
+                selected_funds=selected_funds,
                 limit=top_k
             )
 
@@ -1094,47 +1095,49 @@ def perform_bm25_search_on_meeting_chunks(
     chunks_collection,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    selected_funds: Optional[List[str]] = None,
     limit: int = 100
 ) -> List[dict]:
     """
     Perform BM25S search on meeting note chunks using pre-built index.
-    
+
     Uses the pre-indexed BM25S retriever for instant search (~10ms vs ~10s before).
     Falls back to legacy search if index not loaded.
-    
+
     Args:
         query: Search query
         chunks_collection: MongoDB MeetingChunks collection (unused with BM25S)
         start_date: Start date filter (YYYY-MM-DD string)
         end_date: End date filter (YYYY-MM-DD string)
+        selected_funds: List of fund names to filter
         limit: Maximum results to return
-        
+
     Returns:
         List of matching chunk documents with bm25_score
     """
     import time
     start_time = time.time()
-    
+
     try:
         # Check if BM25S index is loaded
         if not MEETING_BM25S_LOADED or MEETING_BM25S_INDEX is None:
             print("[BM25S-MEETING] Index not loaded, loading now...")
             load_meeting_bm25s_index()
-            
+
         if not MEETING_BM25S_LOADED or MEETING_BM25S_INDEX is None or not MEETING_CHUNKS_CACHE:
             print("[BM25S-MEETING] Index still not available, returning empty")
             return []
-        
+
         # Tokenize query
         query_tokens = bm25s.tokenize(query, stopwords="en")
-        
-        # Retrieve top candidates (retrieve more than limit to filter by date)
-        retrieve_k = min(limit * 5, len(MEETING_CHUNKS_CACHE))  # Get 5x to allow date filtering
+
+        # Retrieve top candidates (retrieve more than limit to filter by date/funds)
+        retrieve_k = min(limit * 10, len(MEETING_CHUNKS_CACHE))  # Get 10x to allow date/fund filtering
         results, scores = MEETING_BM25S_INDEX.retrieve(query_tokens, corpus=MEETING_CHUNKS_CACHE, k=retrieve_k)
-        
+
         search_time = time.time() - start_time
-        
-        # Filter by date and map results
+
+        # Filter by date, funds, and map results
         scored_chunks = []
         for i, (chunk, score) in enumerate(zip(results[0], scores[0])):
             # Date filter
@@ -1142,23 +1145,29 @@ def perform_bm25_search_on_meeting_chunks(
                 chunk_date = chunk.get("meeting_date", "")
                 if chunk_date and (chunk_date < start_date or chunk_date > end_date):
                     continue
-            
+
+            # Fund filter
+            if selected_funds and len(selected_funds) > 0:
+                chunk_fund = chunk.get("fund_name")
+                if chunk_fund not in selected_funds:
+                    continue
+
             # Skip zero scores
             if score <= 0:
                 continue
-                
+
             result = chunk.copy()
             result["bm25_score"] = float(score)
             scored_chunks.append(result)
-            
+
             if len(scored_chunks) >= limit:
                 break
-        
+
         total_time = time.time() - start_time
         print(f"[BM25S-MEETING] Found {len(scored_chunks)} results in {total_time:.3f}s (search: {search_time:.3f}s)")
-        
+
         return scored_chunks
-        
+
     except Exception as e:
         print(f"[BM25S-MEETING] Error: {e}")
         import traceback
