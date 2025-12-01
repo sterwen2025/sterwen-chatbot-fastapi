@@ -279,14 +279,17 @@ def load_all_fund_names():
         ALL_FUND_NAMES = []
 
 
-def load_meeting_bm25s_index():
+def load_meeting_bm25s_index(force_reload: bool = False):
     """
     Load all meeting chunks and build BM25S index at startup.
     This enables instant BM25 search without database queries.
+
+    Args:
+        force_reload: If True, reload even if already loaded (for index refresh)
     """
     global MEETING_BM25S_INDEX, MEETING_CHUNKS_CACHE, MEETING_BM25S_LOADED
-    
-    if MEETING_BM25S_LOADED:
+
+    if MEETING_BM25S_LOADED and not force_reload:
         return
     
     try:
@@ -341,14 +344,17 @@ def load_meeting_bm25s_index():
         traceback.print_exc()
 
 
-def load_factsheet_bm25s_index():
+def load_factsheet_bm25s_index(force_reload: bool = False):
     """
     Load all factsheet chunks and build BM25S index at startup.
     This enables instant BM25 search without database queries.
+
+    Args:
+        force_reload: If True, reload even if already loaded (for index refresh)
     """
     global FACTSHEET_BM25S_INDEX, FACTSHEET_CHUNKS_CACHE, FACTSHEET_BM25S_LOADED
-    
-    if FACTSHEET_BM25S_LOADED:
+
+    if FACTSHEET_BM25S_LOADED and not force_reload:
         return
     
     try:
@@ -1977,6 +1983,7 @@ Instructions:
 8. Use clear section headers to distinguish internal data from web search results
 9. Give detailed, comprehensive responses - do not be brief
 10. **CITATION STYLE - IMPORTANT**: When citing factsheets, ALWAYS use the fund name and date (e.g., "Infinitum Master Fund Factsheet (Sep 01, 2025)"). NEVER use generic numbered references like "Factsheet 1" or "(Source: Factsheet 16)" - these are meaningless to users
+11. **FACTSHEET DATA**: Factsheets contain fund metrics and holdings but do NOT include manager names. Do not mention "Manager Not Listed" or similar - simply cite the factsheet by fund name and date without referencing managers
 
 Available data sources: {', '.join(data_sources)}
 
@@ -2222,6 +2229,43 @@ def get_funds_by_portfolios(selected_portfolios: List[str]):
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "meeting-notes-chatbot"}
+
+
+@app.post("/api/admin/reload-index")
+async def reload_bm25_index():
+    """
+    Reload BM25S indexes for meetings and factsheets.
+    Called automatically by embed scripts after embedding new documents.
+    """
+    import time
+    try:
+        results = {}
+
+        start = time.time()
+        load_meeting_bm25s_index(force_reload=True)
+        results["meetings"] = {
+            "chunks_indexed": len(MEETING_CHUNKS_CACHE),
+            "time_seconds": round(time.time() - start, 2)
+        }
+
+        start = time.time()
+        load_factsheet_bm25s_index(force_reload=True)
+        results["factsheets"] = {
+            "chunks_indexed": len(FACTSHEET_CHUNKS_CACHE),
+            "time_seconds": round(time.time() - start, 2)
+        }
+
+        global ALL_FUND_NAMES, FUND_NAMES_LOADED
+        FUND_NAMES_LOADED = False
+        load_all_fund_names()
+        results["fund_names"] = len(ALL_FUND_NAMES)
+
+        print(f"[INDEX RELOAD] Successfully reloaded: {results}")
+        return {"status": "success", "results": results}
+    except Exception as e:
+        print(f"[INDEX RELOAD] Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Error reloading indexes: {e}")
+
 
 @app.get("/api/chat/portfolios")
 async def get_portfolios_endpoint():
