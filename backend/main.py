@@ -933,7 +933,7 @@ def fetch_factsheets(
 
         # Connect to MongoDB
         db = mongo_client["fund_reports"]
-        factsheets_collection = db["factsheets - Alex"]
+        factsheets_collection = db["factsheet"]
 
         # Build filter query - only use valid factsheets with UniqueName
         # Note: Records without UniqueName field cannot be included in statistics
@@ -2244,7 +2244,7 @@ async def get_all_funds():
 
         # Get funds from fund reports
         reports_db = mongo_client["fund_reports"]
-        reports_collection = reports_db["factsheets - Alex"]
+        reports_collection = reports_db["factsheet"]
         report_funds = reports_collection.distinct("UniqueName", {"is_fund_factsheet": "y"})
 
         # Get funds from transcripts

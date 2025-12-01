@@ -105,7 +105,7 @@ const ChatBot = () => {
   // Note: Only Meeting Notes has RAG implementation. Factsheet and Transcripts are disabled for now.
   const [dataSources, setDataSources] = useState<string[]>(['Meeting Notes']);
   const [useDateFilter, setUseDateFilter] = useState(false);
-  const [dateRange, setDateRange] = useState<[Dayjs, Dayjs]>([dayjs().subtract(6, 'month'), dayjs()]);
+  const [dateRange, setDateRange] = useState<[Dayjs, Dayjs]>([dayjs().subtract(6, 'month').startOf('month'), dayjs().endOf('month')]);
   const [selectedPortfolios, setSelectedPortfolios] = useState<string[]>([]);
   const [selectedFunds, setSelectedFunds] = useState<string[]>([]);
 
@@ -650,7 +650,7 @@ const ChatBot = () => {
               </Checkbox.Group>
             </div>
 
-            {/* Date Range */}
+            {/* Date Range - Month Picker */}
             <div style={{ marginBottom: 18 }}>
               <Checkbox
                 checked={useDateFilter}
@@ -660,13 +660,27 @@ const ChatBot = () => {
                 <Text style={{ fontSize: 15, color: '#666' }}>Filter by Date</Text>
               </Checkbox>
               {useDateFilter && (
-                <RangePicker
-                  value={dateRange}
-                  onChange={(dates) => dates && setDateRange([dates[0]!, dates[1]!])}
-                  style={{ width: '100%', fontSize: 15 }}
-                  format="YYYY-MM-DD"
-                  size="large"
-                />
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <DatePicker
+                    value={dateRange[0]}
+                    onChange={(date) => date && setDateRange([date.startOf('month'), dateRange[1]])}
+                    picker="month"
+                    format="MMM YYYY"
+                    size="middle"
+                    placeholder="From"
+                    style={{ flex: 1 }}
+                  />
+                  <Text style={{ color: '#999', fontSize: 13 }}>to</Text>
+                  <DatePicker
+                    value={dateRange[1]}
+                    onChange={(date) => date && setDateRange([dateRange[0], date.endOf('month')])}
+                    picker="month"
+                    format="MMM YYYY"
+                    size="middle"
+                    placeholder="To"
+                    style={{ flex: 1 }}
+                  />
+                </div>
               )}
             </div>
 
