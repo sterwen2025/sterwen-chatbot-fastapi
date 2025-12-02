@@ -98,13 +98,13 @@ const ChatBot = () => {
   const [useWebSearch, setUseWebSearch] = useState(false);
 
   // Model selection state
-  const [model, setModel] = useState<'gemini-2.5-flash' | 'gemini-2.5-pro' | 'gemini-3-low-thinking' | 'gemini-3-high-thinking'>('gemini-2.5-flash');
+  const [model, setModel] = useState<'gemini-2.5-flash' | 'gemini-2.5-pro' | 'gemini-3-low-thinking' | 'gemini-3-high-thinking'>('gemini-3-high-thinking');
   const [thinkingSummary, setThinkingSummary] = useState<string>(''); // Stores thinking progress
 
   // Filter states
   // Note: Only Meeting Notes has RAG implementation. Factsheet and Transcripts are disabled for now.
-  const [dataSources, setDataSources] = useState<string[]>(['Meeting Notes']);
-  const [useDateFilter, setUseDateFilter] = useState(false);
+  const [dataSources, setDataSources] = useState<string[]>(['Meeting Notes', 'Factsheet']);
+  const [useDateFilter, setUseDateFilter] = useState(true);
   const [dateRange, setDateRange] = useState<[Dayjs, Dayjs]>([dayjs().subtract(6, 'month').startOf('month'), dayjs().endOf('month')]);
   const [selectedPortfolios, setSelectedPortfolios] = useState<string[]>([]);
   const [selectedFunds, setSelectedFunds] = useState<string[]>([]);
