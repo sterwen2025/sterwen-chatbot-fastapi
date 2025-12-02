@@ -344,6 +344,29 @@ const ChatBot = () => {
 
     setConversation(prev => [...prev, tempMessage]);
 
+    // Save the question immediately (with empty answer) so it appears in history
+    // This ensures the conversation shows up even if the response takes a long time
+    if (currentConversationId) {
+      try {
+        await fetch(API_ENDPOINTS.conversationsSaveMessage(currentConversationId), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            session_id: sessionId,
+            message: {
+              question: currentQuestion,
+              answer: '',  // Empty answer - will be updated when response completes
+              sources: effectiveDataSources,
+              timestamp: tempMessage.timestamp.toISOString()
+            }
+          })
+        });
+        await loadConversations(); // Refresh list to show the new conversation
+      } catch (error) {
+        console.error('Error saving initial message:', error);
+      }
+    }
+
     // Create AbortController for this request
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
@@ -435,14 +458,21 @@ const ChatBot = () => {
               }
 
               if (jsonData.done) {
-                // Save the completed message to database
-                const completedMessage: ChatMessage = {
-                  question: currentQuestion,
-                  answer: accumulatedAnswer,
-                  sources: dataSources,
-                  timestamp: tempMessage.timestamp
-                };
-                saveChatMessage(completedMessage);
+                // Update the last message's answer in database (message was already saved with empty answer)
+                if (currentConversationId) {
+                  try {
+                    await fetch(API_ENDPOINTS.conversationsUpdateLastMessage(currentConversationId), {
+                      method: 'PUT',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        session_id: sessionId,
+                        answer: accumulatedAnswer
+                      })
+                    });
+                  } catch (error) {
+                    console.error('Error updating message answer:', error);
+                  }
+                }
               }
 
               if (jsonData.error) {

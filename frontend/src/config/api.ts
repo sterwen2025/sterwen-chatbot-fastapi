@@ -12,4 +12,5 @@ export const API_ENDPOINTS = {
   conversationsGet: (id: string) => `${API_BASE_URL}/chat/conversations/${id}`,
   conversationsDelete: (id: string) => `${API_BASE_URL}/chat/conversations/${id}`,
   conversationsSaveMessage: (id: string) => `${API_BASE_URL}/chat/conversations/${id}/messages`,
+  conversationsUpdateLastMessage: (id: string) => `${API_BASE_URL}/chat/conversations/${id}/messages/last`,
 };

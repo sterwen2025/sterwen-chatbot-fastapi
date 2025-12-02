@@ -2666,6 +2666,37 @@ async def save_message(request: Request, conversation_id: str, chat_request: Sav
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error saving message: {e}")
 
+class UpdateLastMessageRequest(BaseModel):
+    session_id: str
+    answer: str
+
+@app.put("/api/chat/conversations/{conversation_id}/messages/last")
+async def update_last_message(request: Request, conversation_id: str, update_request: UpdateLastMessageRequest):
+    """Update the last message's answer in a conversation."""
+    try:
+        user_id = get_user_identifier(request, update_request.session_id)
+
+        db = mongo_client["Chatbot"]
+        collection = db["Conversations"]
+
+        # Get conversation, update last message, save back
+        conversation = collection.find_one({"conversation_id": conversation_id, "user_id": user_id})
+        if conversation and conversation.get("messages"):
+            messages = conversation["messages"]
+            messages[-1]["answer"] = update_request.answer
+            collection.update_one(
+                {"conversation_id": conversation_id, "user_id": user_id},
+                {"$set": {"messages": messages, "updated_at": datetime.utcnow()}}
+            )
+            return {"success": True, "message": "Last message updated successfully"}
+        else:
+            raise HTTPException(status_code=404, detail="Conversation or messages not found")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error updating message: {e}")
+
 @app.delete("/api/chat/conversations/{conversation_id}")
 async def delete_conversation(request: Request, conversation_id: str, session_id: Optional[str] = None):
     """Delete a conversation."""
