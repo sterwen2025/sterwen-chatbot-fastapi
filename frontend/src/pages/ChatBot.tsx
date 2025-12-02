@@ -983,7 +983,7 @@ const ChatBot = () => {
                       Meeting Notes AI Assistant
                     </Title>
                     <Text type="secondary" style={{ fontSize: 18, textAlign: 'center' }}>
-                      Ask me anything about your meeting notes, factsheets, and transcripts
+                      Ask me anything about your meeting notes and factsheets
                     </Text>
                   </Space>
                   <Space direction="vertical" align="start" size={6} style={{ marginTop: 8 }}>
@@ -998,6 +998,14 @@ const ChatBot = () => {
                     </Text>
                     <Text type="secondary" style={{ fontSize: 16, paddingLeft: 8 }}>
                       • "What topics were discussed about [fund name]?"
+                    </Text>
+                  </Space>
+                  <Space direction="vertical" align="start" size={4} style={{ marginTop: 16, padding: '12px 16px', background: '#f5f5f5', borderRadius: 8, maxWidth: 500 }}>
+                    <Text type="secondary" style={{ fontSize: 13, fontStyle: 'italic' }}>
+                      Tip: Gemini 3 Thorough can be slow. Use filters for faster results.
+                    </Text>
+                    <Text type="secondary" style={{ fontSize: 13, fontStyle: 'italic' }}>
+                      Note: AI can make mistakes. Please verify important information.
                     </Text>
                   </Space>
                 </Space>
