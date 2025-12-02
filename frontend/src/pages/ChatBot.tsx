@@ -243,7 +243,7 @@ const ChatBot = () => {
     }
   };
 
-  const createNewConversation = async () => {
+  const createNewConversation = async (): Promise<string | null> => {
     console.log('Creating new conversation...');
     try {
       const response = await fetch(API_ENDPOINTS.conversationsCreate, {
@@ -258,12 +258,15 @@ const ChatBot = () => {
         setCurrentConversationId(data.conversation_id);
         setConversation([]);
         await loadConversations();
+        return data.conversation_id;  // Return the ID
       } else {
         message.error('Failed to create conversation');
+        return null;
       }
     } catch (error) {
       console.error('Error creating conversation:', error);
       message.error('Failed to create new conversation');
+      return null;
     }
   };
 
@@ -319,10 +322,14 @@ const ChatBot = () => {
     }
 
     // Create new conversation if none exists
+    let activeConversationId = currentConversationId;
     if (!currentConversationId) {
-      await createNewConversation();
-      // Wait a moment for the conversation to be created
-      await new Promise(resolve => setTimeout(resolve, 100));
+      const newId = await createNewConversation();
+      if (!newId) {
+        message.error('Failed to create conversation');
+        return;
+      }
+      activeConversationId = newId;
     }
 
     setLoading(true);
@@ -346,9 +353,9 @@ const ChatBot = () => {
 
     // Save the question immediately (with empty answer) so it appears in history
     // This ensures the conversation shows up even if the response takes a long time
-    if (currentConversationId) {
+    if (activeConversationId) {
       try {
-        await fetch(API_ENDPOINTS.conversationsSaveMessage(currentConversationId), {
+        await fetch(API_ENDPOINTS.conversationsSaveMessage(activeConversationId), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -459,9 +466,9 @@ const ChatBot = () => {
 
               if (jsonData.done) {
                 // Update the last message's answer in database (message was already saved with empty answer)
-                if (currentConversationId) {
+                if (activeConversationId) {
                   try {
-                    await fetch(API_ENDPOINTS.conversationsUpdateLastMessage(currentConversationId), {
+                    await fetch(API_ENDPOINTS.conversationsUpdateLastMessage(activeConversationId), {
                       method: 'PUT',
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({
@@ -479,8 +486,13 @@ const ChatBot = () => {
                 throw new Error(jsonData.error);
               }
             } catch (e) {
-              // Ignore JSON parse errors for partial chunks
-              if (e instanceof Error && !e.message.includes('Unexpected')) {
+              // Ignore JSON parse errors for partial/malformed chunks (SSE can split JSON across chunks)
+              if (e instanceof SyntaxError) {
+                console.warn('[SSE] Skipping malformed JSON chunk:', line.slice(6, 50) + '...');
+                continue; // Skip this line and continue processing
+              }
+              // Re-throw non-parse errors
+              if (e instanceof Error) {
                 throw e;
               }
             }

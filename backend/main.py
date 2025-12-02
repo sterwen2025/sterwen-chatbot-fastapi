@@ -2082,10 +2082,14 @@ Now provide a comprehensive, detailed answer to the question above."""
                         print(f"[STREAMING] Yielding chunk: {len(chunk.text)} chars")
                         yield chunk.text
                     # Try to extract from candidates.content.parts
-                    elif hasattr(chunk, 'candidates'):
+                    elif hasattr(chunk, 'candidates') and chunk.candidates:
                         for candidate in chunk.candidates:
-                            if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+                            if candidate is None:
+                                continue
+                            if hasattr(candidate, 'content') and candidate.content and hasattr(candidate.content, 'parts') and candidate.content.parts:
                                 for part in candidate.content.parts:
+                                    if part is None:
+                                        continue
                                     print(f"[DEBUG] Part type: {type(part)}, attributes: {dir(part)}")
 
                                     # Check if this is a thought summary
@@ -2484,10 +2488,16 @@ async def ask_question_stream(request: ChatRequest):
                                 yield f"data: {json.dumps({'thinking': thought_content})}\n\n"
                                 last_heartbeat = time.time()
                             else:
+                                # Skip None or empty items
+                                if item is None:
+                                    print(f"[DEBUG] Skipping None item")
+                                    continue
                                 # Strip HTML tags and send each text chunk as Server-Sent Events format
-                                cleaned_content = strip_html_tags(item) if isinstance(item, str) else item
-                                yield f"data: {json.dumps({'content': cleaned_content})}\n\n"
-                                last_heartbeat = time.time()
+                                cleaned_content = strip_html_tags(item) if isinstance(item, str) else str(item) if item else ''
+                                # Only send non-empty content
+                                if cleaned_content:
+                                    yield f"data: {json.dumps({'content': cleaned_content})}\n\n"
+                                    last_heartbeat = time.time()
 
                     except queue.Empty:
                         # No item available, check if we need to send heartbeat
