@@ -31,7 +31,9 @@ import {
   HistoryOutlined,
   SearchOutlined,
   GlobalOutlined,
-  StopOutlined
+  StopOutlined,
+  CopyOutlined,
+  CheckOutlined
 } from '@ant-design/icons';
 import { API_ENDPOINTS } from '../config/api';
 import dayjs, { Dayjs } from 'dayjs';
@@ -100,6 +102,7 @@ const ChatBot = () => {
   // Model selection state
   const [model, setModel] = useState<'gemini-2.5-flash' | 'gemini-2.5-pro' | 'gemini-3-low-thinking' | 'gemini-3-high-thinking'>('gemini-3-high-thinking');
   const [thinkingSummary, setThinkingSummary] = useState<string>(''); // Stores thinking progress
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null); // Track which message was copied
 
   // Filter states
   // Note: Only Meeting Notes has RAG implementation. Factsheet and Transcripts are disabled for now.
@@ -307,6 +310,48 @@ const ChatBot = () => {
       await loadConversations(); // Refresh list to update titles and timestamps
     } catch (error) {
       console.error('Error saving chat message:', error);
+    }
+  };
+
+  // Copy response to clipboard (preserves full HTML with all styling)
+  const handleCopyResponse = async (text: string, index: number) => {
+    try {
+      // Find the rendered HTML content from the DOM
+      const messageElements = document.querySelectorAll('.markdown-content');
+      const targetElement = messageElements[index];
+
+      if (targetElement) {
+        // Get the full HTML with all inline styles preserved
+        const htmlContent = targetElement.innerHTML;
+
+        // Create a ClipboardItem with both HTML and plain text
+        const blob = new Blob([htmlContent], { type: 'text/html' });
+        const plainBlob = new Blob([targetElement.textContent || ''], { type: 'text/plain' });
+
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            'text/html': blob,
+            'text/plain': plainBlob
+          })
+        ]);
+      } else {
+        // Fallback to plain text
+        await navigator.clipboard.writeText(text);
+      }
+
+      setCopiedIndex(index);
+      message.success('Copied to clipboard');
+      setTimeout(() => setCopiedIndex(null), 2000);
+    } catch (error) {
+      // Fallback for browsers that don't support ClipboardItem
+      try {
+        await navigator.clipboard.writeText(text);
+        setCopiedIndex(index);
+        message.success('Copied to clipboard');
+        setTimeout(() => setCopiedIndex(null), 2000);
+      } catch (e) {
+        message.error('Failed to copy');
+      }
     }
   };
 
@@ -1127,6 +1172,23 @@ const ChatBot = () => {
                             {msg.answer}
                           </ReactMarkdown>
                         </div>
+                        {/* Copy Button */}
+                        {msg.answer && (
+                          <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
+                            <Button
+                              type="text"
+                              size="small"
+                              icon={copiedIndex === index ? <CheckOutlined /> : <CopyOutlined />}
+                              onClick={() => handleCopyResponse(msg.answer, index)}
+                              style={{
+                                color: copiedIndex === index ? '#52c41a' : '#8c8c8c',
+                                fontSize: 12
+                              }}
+                            >
+                              {copiedIndex === index ? 'Copied' : 'Copy'}
+                            </Button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
