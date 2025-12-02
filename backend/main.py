@@ -2407,63 +2407,98 @@ async def ask_question_stream(request: ChatRequest):
         print(f"Selected funds: {request.selected_funds}")
         print(f"Model: {request.model}")
 
-        def generate():
+        async def generate():
             import time
+            import asyncio
+            from concurrent.futures import ThreadPoolExecutor
+            import queue
+            import threading
+
             try:
                 print("[DEBUG] ========== GENERATE FUNCTION STARTED ==========")
                 print(f"[DEBUG] Question: {request.question}")
                 print(f"[DEBUG] Data sources: {request.data_sources}")
                 print("[DEBUG] About to call ask_gemini_with_rag_streaming...")
 
-                # Track last heartbeat time for Azure keep-alive (every 15 seconds)
+                # Use a queue to communicate between threads
+                result_queue = queue.Queue()
+                stop_event = threading.Event()
+
+                def run_streaming():
+                    """Run the streaming function in a separate thread."""
+                    try:
+                        for item in ask_gemini_with_rag_streaming(
+                            question=request.question,
+                            data_sources=request.data_sources,
+                            start_date=request.start_date,
+                            end_date=request.end_date,
+                            selected_funds=request.selected_funds,
+                            conversation_history=request.conversation_history,
+                            model=request.model
+                        ):
+                            result_queue.put(('item', item))
+                        result_queue.put(('done', None))
+                    except Exception as e:
+                        result_queue.put(('error', str(e)))
+
+                # Start the streaming in a background thread
+                thread = threading.Thread(target=run_streaming, daemon=True)
+                thread.start()
+
+                # Track last heartbeat time for Azure keep-alive
                 last_heartbeat = time.time()
-                heartbeat_interval = 15  # Send heartbeat every 15 seconds
+                heartbeat_interval = 10  # Send heartbeat every 10 seconds (more aggressive for Azure)
 
-                for item in ask_gemini_with_rag_streaming(
-                    question=request.question,
-                    data_sources=request.data_sources,
-                    start_date=request.start_date,
-                    end_date=request.end_date,
-                    selected_funds=request.selected_funds,
-                    conversation_history=request.conversation_history,
-                    model=request.model
-                ):
-                    # Check if we need to send a heartbeat to keep Azure connection alive
-                    current_time = time.time()
-                    if current_time - last_heartbeat >= heartbeat_interval:
-                        yield f"data: {json.dumps({'heartbeat': True})}\n\n"
-                        last_heartbeat = current_time
-                        print(f"[HEARTBEAT] Sent heartbeat at {current_time:.0f}")
+                while True:
+                    try:
+                        # Non-blocking get with short timeout to allow heartbeats
+                        msg_type, item = result_queue.get(timeout=0.5)
 
-                    print(f"[DEBUG] Received item from streaming: {type(item)}")
-                    # Check if it's a status tuple or text content
-                    if isinstance(item, tuple) and item[0] == 'STATUS':
-                        # Send search status event
-                        yield f"data: {json.dumps({'searching': item[1]})}\n\n"
-                        last_heartbeat = time.time()  # Reset heartbeat timer
-                    elif isinstance(item, tuple) and item[0] == 'GENERATING':
-                        # Send generating status event
-                        yield f"data: {json.dumps({'generating': item[1]})}\n\n"
-                        last_heartbeat = time.time()  # Reset heartbeat timer
-                    elif isinstance(item, tuple) and item[0] == 'HEARTBEAT':
-                        # Send heartbeat event from streaming function
-                        yield f"data: {json.dumps({'heartbeat': True})}\n\n"
-                        last_heartbeat = time.time()
-                        print(f"[HEARTBEAT] Sent heartbeat from streaming function")
-                    elif isinstance(item, str) and '__THOUGHT__' in item:
-                        # Extract thought content and send as thinking event
-                        thought_content = item.replace('__THOUGHT__', '').replace('__END_THOUGHT__', '')
-                        yield f"data: {json.dumps({'thinking': thought_content})}\n\n"
-                        last_heartbeat = time.time()  # Reset heartbeat timer
-                    else:
-                        # Strip HTML tags and send each text chunk as Server-Sent Events format
-                        cleaned_content = strip_html_tags(item) if isinstance(item, str) else item
-                        yield f"data: {json.dumps({'content': cleaned_content})}\n\n"
-                        last_heartbeat = time.time()  # Reset heartbeat timer
+                        if msg_type == 'done':
+                            # Send done signal
+                            yield f"data: {json.dumps({'done': True})}\n\n"
+                            print("[DEBUG] Finished generate() function")
+                            break
+                        elif msg_type == 'error':
+                            yield f"data: {json.dumps({'error': item})}\n\n"
+                            break
+                        elif msg_type == 'item':
+                            print(f"[DEBUG] Received item from streaming: {type(item)}")
+                            # Check if it's a status tuple or text content
+                            if isinstance(item, tuple) and item[0] == 'STATUS':
+                                # Send search status event
+                                yield f"data: {json.dumps({'searching': item[1]})}\n\n"
+                                last_heartbeat = time.time()
+                            elif isinstance(item, tuple) and item[0] == 'GENERATING':
+                                # Send generating status event
+                                yield f"data: {json.dumps({'generating': item[1]})}\n\n"
+                                last_heartbeat = time.time()
+                            elif isinstance(item, tuple) and item[0] == 'HEARTBEAT':
+                                # Send heartbeat event from streaming function
+                                yield f"data: {json.dumps({'heartbeat': True})}\n\n"
+                                last_heartbeat = time.time()
+                                print(f"[HEARTBEAT] Sent heartbeat from streaming function")
+                            elif isinstance(item, str) and '__THOUGHT__' in item:
+                                # Extract thought content and send as thinking event
+                                thought_content = item.replace('__THOUGHT__', '').replace('__END_THOUGHT__', '')
+                                yield f"data: {json.dumps({'thinking': thought_content})}\n\n"
+                                last_heartbeat = time.time()
+                            else:
+                                # Strip HTML tags and send each text chunk as Server-Sent Events format
+                                cleaned_content = strip_html_tags(item) if isinstance(item, str) else item
+                                yield f"data: {json.dumps({'content': cleaned_content})}\n\n"
+                                last_heartbeat = time.time()
 
-                # Send done signal
-                yield f"data: {json.dumps({'done': True})}\n\n"
-                print("[DEBUG] Finished generate() function")
+                    except queue.Empty:
+                        # No item available, check if we need to send heartbeat
+                        current_time = time.time()
+                        if current_time - last_heartbeat >= heartbeat_interval:
+                            yield f"data: {json.dumps({'heartbeat': True})}\n\n"
+                            last_heartbeat = current_time
+                            print(f"[HEARTBEAT] Sent keep-alive heartbeat at {current_time:.0f} (waiting for Gemini)")
+                        # Small async sleep to prevent busy-waiting
+                        await asyncio.sleep(0.1)
+
             except Exception as e:
                 print(f"Error in generate: {str(e)}")
                 import traceback
