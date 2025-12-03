@@ -1181,7 +1181,7 @@ const ChatBot = () => {
                               icon={copiedIndex === index ? <CheckOutlined /> : <CopyOutlined />}
                               onClick={() => handleCopyResponse(msg.answer, index)}
                               style={{
-                                color: copiedIndex === index ? '#52c41a' : '#8c8c8c',
+                                color: '#8c8c8c',
                                 fontSize: 12
                               }}
                             >
