@@ -656,7 +656,7 @@ const ChatBot = () => {
           <img
             src="/sterwen-logo.png"
             alt="Sterwen"
-            style={{ height: isMobile ? '32px' : '42px', width: 'auto' }}
+            style={{ height: isMobile ? '24px' : '42px', width: 'auto' }}
           />
         </div>
         <Space size={isMobile ? 4 : 12}>
