@@ -1768,12 +1768,16 @@ def ask_gemini_with_rag_streaming(
 
     if model == "gemini-3-low-thinking":
         actual_model = "gemini-3-pro-preview"
-        thinking_config = types.ThinkingConfig(thinking_level="low")
-        print(f"[MODEL] Using {actual_model} with low thinking")
+        thinking_config = types.ThinkingConfig(thinking_level="low", include_thoughts=True)
+        print(f"[MODEL] Using {actual_model} with low thinking (include_thoughts=True)")
     elif model == "gemini-3-high-thinking":
         actual_model = "gemini-3-pro-preview"
         thinking_config = types.ThinkingConfig(include_thoughts=True)
         print(f"[MODEL] Using {actual_model} with high thinking (include_thoughts=True)")
+    elif model == "gemini-2.5-flash" or model == "gemini-2.5-pro":
+        # Gemini 2.5 models have thinking enabled by default, just show thoughts
+        thinking_config = types.ThinkingConfig(include_thoughts=True)
+        print(f"[MODEL] Using {actual_model} with include_thoughts=True")
     else:
         print(f"[MODEL] Using {actual_model}")
 
@@ -1940,11 +1944,10 @@ def ask_gemini_with_rag_streaming(
    - **STRUCTURE YOUR RESPONSE IN TWO CLEAR SECTIONS**:
      * **Section 1 - Internal Data Analysis**: Present all information from meeting notes and factsheets with detailed inline citations
      * **Section 2 - Web Search Results**: Present additional current information found via web search
-       - MANDATORY: Every web search fact MUST include clickable markdown links to sources
+       - **CRITICAL**: Include clickable markdown links to web sources
        - Use markdown link format: [Source Title](https://full-url-here.com)
        - Example: "According to the latest filing from [AKO Capital 13F Q3 2025](https://sec.gov/cgi-bin/browse-edgar?action=getcompany...)"
        - Keep link text concise (under 50 characters) but descriptive
-       - DO NOT write web search analysis without citing the specific webpage links
        - If you cannot find sources to cite, state "No relevant web sources found" instead of writing unsourced content
        - **CRITICAL - NUMERICAL DATA VERIFICATION**: Financial numbers and percentages are HIGHLY sensitive and must be directly verifiable
          * When citing ANY number (stock prices, percentages, returns, AUM, etc.), the user MUST be able to see that EXACT number on the linked page
