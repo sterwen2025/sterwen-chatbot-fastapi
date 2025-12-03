@@ -15,7 +15,8 @@ import {
   Tag,
   Empty,
   Row,
-  Col
+  Col,
+  Drawer
 } from 'antd';
 import {
   SendOutlined,
@@ -33,7 +34,9 @@ import {
   GlobalOutlined,
   StopOutlined,
   CopyOutlined,
-  CheckOutlined
+  CheckOutlined,
+  MenuOutlined,
+  CloseOutlined
 } from '@ant-design/icons';
 import { API_ENDPOINTS } from '../config/api';
 import dayjs, { Dayjs } from 'dayjs';
@@ -104,6 +107,10 @@ const ChatBot = () => {
   const [thinkingSummary, setThinkingSummary] = useState<string>(''); // Stores thinking progress
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null); // Track which message was copied
 
+  // Mobile responsive state
+  const [isMobile, setIsMobile] = useState<boolean>(false);
+  const [filterDrawerVisible, setFilterDrawerVisible] = useState<boolean>(false);
+
   // Filter states
   // Note: Only Meeting Notes has RAG implementation. Factsheet and Transcripts are disabled for now.
   const [dataSources, setDataSources] = useState<string[]>(['Meeting Notes', 'Factsheet']);
@@ -121,6 +128,16 @@ const ChatBot = () => {
     transcripts_count: 0,
     total_count: 0
   });
+
+  // Detect mobile screen size
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
 
   // Load conversations list on mount
   useEffect(() => {
@@ -613,36 +630,50 @@ const ChatBot = () => {
       <Header style={{
         background: 'linear-gradient(to bottom, #ffffff 0%, #fafbfc 100%)',
         borderBottom: '1px solid #e1e4e8',
-        padding: '0 32px',
+        padding: isMobile ? '0 12px' : '0 32px',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
         zIndex: 1000,
-        height: 70,
-        lineHeight: '70px',
+        height: isMobile ? 56 : 70,
+        lineHeight: isMobile ? '56px' : '70px',
         boxShadow: '0 1px 3px rgba(0,0,0,0.04)'
       }}>
-        <div style={{ display: 'flex', alignItems: 'center' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 8 : 0 }}>
+          {/* Mobile menu button */}
+          {isMobile && (
+            <Button
+              icon={<MenuOutlined />}
+              onClick={() => setFilterDrawerVisible(true)}
+              type="text"
+              style={{
+                fontSize: 18,
+                padding: '4px 8px',
+                height: 36
+              }}
+            />
+          )}
           <img
             src="/sterwen-logo.png"
             alt="Sterwen"
-            style={{ height: '42px', width: 'auto' }}
+            style={{ height: isMobile ? '32px' : '42px', width: 'auto' }}
           />
         </div>
-        <Space size={12}>
+        <Space size={isMobile ? 4 : 12}>
           <Button
             icon={<PlusOutlined />}
             onClick={createNewConversation}
             type="primary"
             style={{
               borderRadius: 8,
-              height: 38,
-              padding: '0 16px',
+              height: isMobile ? 32 : 38,
+              padding: isMobile ? '0 8px' : '0 16px',
               fontWeight: 500,
-              transition: 'all 0.2s'
+              transition: 'all 0.2s',
+              fontSize: isMobile ? 12 : 14
             }}
           >
-            New Chat
+            {isMobile ? 'New' : 'New Chat'}
           </Button>
           <Button
             icon={<HistoryOutlined />}
@@ -650,50 +681,224 @@ const ChatBot = () => {
             type={showHistory ? "primary" : "default"}
             style={{
               borderRadius: 8,
-              height: 38,
-              padding: '0 16px',
+              height: isMobile ? 32 : 38,
+              padding: isMobile ? '0 8px' : '0 16px',
               fontWeight: 500,
-              transition: 'all 0.2s'
+              transition: 'all 0.2s',
+              fontSize: isMobile ? 12 : 14
             }}
           >
-            History ({conversations.length})
+            {isMobile ? conversations.length : `History (${conversations.length})`}
           </Button>
-          <Button
-            icon={<DeleteOutlined />}
-            onClick={handleClearConversation}
-            disabled={conversation.length === 0}
-            type="text"
-            danger={conversation.length > 0}
-            style={{
-              borderRadius: 8,
-              height: 38,
-              padding: '0 16px',
-              fontWeight: 500,
-              transition: 'all 0.2s'
-            }}
-          >
-            Clear Chat
-          </Button>
-          <Button
-            icon={<ArrowLeftOutlined />}
-            onClick={() => window.location.href = 'https://sterwen-dashboard-cyc3embxhrhwhdbg.switzerlandnorth-01.azurewebsites.net'}
-            type="default"
-            style={{
-              borderRadius: 8,
-              height: 38,
-              padding: '0 16px',
-              fontWeight: 500,
-              borderColor: '#d1d5db',
-              transition: 'all 0.2s'
-            }}
-          >
-            Back to Dashboard
-          </Button>
+          {!isMobile && (
+            <>
+              <Button
+                icon={<DeleteOutlined />}
+                onClick={handleClearConversation}
+                disabled={conversation.length === 0}
+                type="text"
+                danger={conversation.length > 0}
+                style={{
+                  borderRadius: 8,
+                  height: 38,
+                  padding: '0 16px',
+                  fontWeight: 500,
+                  transition: 'all 0.2s'
+                }}
+              >
+                Clear Chat
+              </Button>
+              <Button
+                icon={<ArrowLeftOutlined />}
+                onClick={() => window.location.href = 'https://sterwen-dashboard-cyc3embxhrhwhdbg.switzerlandnorth-01.azurewebsites.net'}
+                type="default"
+                style={{
+                  borderRadius: 8,
+                  height: 38,
+                  padding: '0 16px',
+                  fontWeight: 500,
+                  borderColor: '#d1d5db',
+                  transition: 'all 0.2s'
+                }}
+              >
+                Back to Dashboard
+              </Button>
+            </>
+          )}
         </Space>
       </Header>
 
-      <Layout style={{ height: 'calc(100vh - 70px)' }}>
-        {/* Sidebar - Filters */}
+      <Layout style={{ height: isMobile ? 'calc(100vh - 56px)' : 'calc(100vh - 70px)' }}>
+        {/* Mobile Filter Drawer */}
+        <Drawer
+          title="Filters"
+          placement="left"
+          onClose={() => setFilterDrawerVisible(false)}
+          open={filterDrawerVisible && isMobile}
+          width={280}
+          styles={{ body: { padding: '16px' } }}
+        >
+          {/* Data Sources */}
+          <div style={{ marginBottom: 18 }}>
+            <Text style={{ fontSize: 14, color: '#666', display: 'block', marginBottom: 8 }}>
+              Data Sources
+            </Text>
+            <Checkbox.Group
+              style={{ display: 'flex', flexDirection: 'column' }}
+              value={dataSources}
+              onChange={(values) => setDataSources(values as string[])}
+            >
+              <Checkbox value="Meeting Notes" style={{ marginLeft: 0, marginBottom: 6, fontSize: 14 }}>
+                <Text style={{ fontSize: 14 }}>Meeting Notes</Text>
+              </Checkbox>
+              <Checkbox value="Factsheet" style={{ marginLeft: 0, fontSize: 14 }}>
+                <Text style={{ fontSize: 14 }}>Factsheet</Text>
+              </Checkbox>
+            </Checkbox.Group>
+          </div>
+
+          {/* Date Range */}
+          <div style={{ marginBottom: 18 }}>
+            <Checkbox
+              checked={useDateFilter}
+              onChange={(e) => setUseDateFilter(e.target.checked)}
+              style={{ marginBottom: 8, fontSize: 14 }}
+            >
+              <Text style={{ fontSize: 14, color: '#666' }}>Filter by Date</Text>
+            </Checkbox>
+            {useDateFilter && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <DatePicker
+                  value={dateRange[0]}
+                  onChange={(date) => date && setDateRange([date.startOf('month'), dateRange[1]])}
+                  picker="month"
+                  format="MMM YYYY"
+                  size="middle"
+                  placeholder="From"
+                  style={{ width: '100%' }}
+                />
+                <DatePicker
+                  value={dateRange[1]}
+                  onChange={(date) => date && setDateRange([dateRange[0], date.endOf('month')])}
+                  picker="month"
+                  format="MMM YYYY"
+                  size="middle"
+                  placeholder="To"
+                  style={{ width: '100%' }}
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Portfolios */}
+          <div style={{ marginBottom: 18 }}>
+            <Text style={{ fontSize: 14, color: '#666', display: 'block', marginBottom: 6 }}>
+              Portfolios
+            </Text>
+            <Select
+              mode="multiple"
+              placeholder="Select"
+              size="middle"
+              style={{ width: '100%', fontSize: 14 }}
+              options={allPortfolios.map(p => ({ label: p, value: p }))}
+              value={selectedPortfolios}
+              onChange={handlePortfolioChange}
+              maxTagCount={1}
+            />
+          </div>
+
+          {/* Funds */}
+          <div style={{ marginBottom: 18 }}>
+            <Text style={{ fontSize: 14, color: '#666', display: 'block', marginBottom: 6 }}>
+              Funds
+            </Text>
+            <Select
+              mode="multiple"
+              placeholder="Select"
+              size="middle"
+              style={{ width: '100%', fontSize: 14 }}
+              options={allFunds.map(f => ({ label: f, value: f }))}
+              value={selectedFunds}
+              onChange={setSelectedFunds}
+              maxTagCount={0}
+              maxTagPlaceholder={() => (
+                <span style={{ color: '#666' }}>
+                  {selectedFunds.length} funds selected
+                </span>
+              )}
+              showSearch
+            />
+            {selectedFunds.length > 0 && (
+              <Button
+                type="link"
+                size="small"
+                onClick={() => setSelectedFunds([])}
+                style={{ padding: '4px 0', height: 'auto', fontSize: 12 }}
+              >
+                Clear all ({selectedFunds.length})
+              </Button>
+            )}
+          </div>
+
+          {/* Live Stats */}
+          <Divider style={{ margin: '16px 0 12px 0', borderColor: '#d9d9d9' }} />
+          <div style={{ marginBottom: 16 }}>
+            <Text style={{ fontSize: 14, color: '#666', display: 'block', marginBottom: 10 }}>
+              Available Data
+            </Text>
+            <Spin spinning={statsLoading}>
+              <Space direction="vertical" style={{ width: '100%' }} size={6}>
+                {dataSources.includes('Meeting Notes') && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={{ fontSize: 14, color: '#666' }}>Meeting Notes</Text>
+                    <Text style={{ fontSize: 14, fontWeight: 500 }}>{filterStats.meeting_notes_count}</Text>
+                  </div>
+                )}
+                {dataSources.includes('Factsheet') && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={{ fontSize: 14, color: '#666' }}>Factsheet</Text>
+                    <Text style={{ fontSize: 14, fontWeight: 500 }}>{filterStats.factsheet_comments_count}</Text>
+                  </div>
+                )}
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  paddingTop: 6,
+                  marginTop: 6,
+                  borderTop: '1px solid #e8e8e8'
+                }}>
+                  <Text strong style={{ fontSize: 14 }}>Total</Text>
+                  <Text strong style={{ fontSize: 14 }}>{filterStats.total_count}</Text>
+                </div>
+              </Space>
+            </Spin>
+          </div>
+
+          {/* Mobile-only actions */}
+          <Divider style={{ margin: '16px 0', borderColor: '#d9d9d9' }} />
+          <Space direction="vertical" style={{ width: '100%' }} size={8}>
+            <Button
+              icon={<DeleteOutlined />}
+              onClick={() => { handleClearConversation(); setFilterDrawerVisible(false); }}
+              disabled={conversation.length === 0}
+              danger={conversation.length > 0}
+              style={{ width: '100%' }}
+            >
+              Clear Chat
+            </Button>
+            <Button
+              icon={<ArrowLeftOutlined />}
+              onClick={() => window.location.href = 'https://sterwen-dashboard-cyc3embxhrhwhdbg.switzerlandnorth-01.azurewebsites.net'}
+              style={{ width: '100%' }}
+            >
+              Back to Dashboard
+            </Button>
+          </Space>
+        </Drawer>
+
+        {/* Sidebar - Filters (Desktop only) */}
+        {!isMobile && (
         <Sider
           width={300}
           style={{
@@ -893,9 +1098,75 @@ const ChatBot = () => {
             </Button>
           </div>
         </Sider>
+        )}
 
-        {/* Conversation History Sidebar */}
-        {showHistory && (
+        {/* Conversation History Sidebar (Desktop) / Drawer (Mobile) */}
+        {isMobile ? (
+          <Drawer
+            title="Chat History"
+            placement="right"
+            onClose={() => setShowHistory(false)}
+            open={showHistory}
+            width={280}
+            styles={{ body: { padding: '16px' } }}
+          >
+            {conversations.length === 0 ? (
+              <Empty
+                description="No conversations yet"
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                style={{ marginTop: 40 }}
+              />
+            ) : (
+              <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                {conversations.map((conv) => (
+                  <div
+                    key={conv.conversation_id}
+                    onClick={() => { loadConversation(conv.conversation_id); setShowHistory(false); }}
+                    style={{
+                      padding: '12px',
+                      borderRadius: 8,
+                      background: conv.conversation_id === currentConversationId ? '#e6f7ff' : '#f8f9fa',
+                      border: `1px solid ${conv.conversation_id === currentConversationId ? '#1890ff' : '#e1e4e8'}`,
+                      cursor: 'pointer',
+                      transition: 'all 0.2s',
+                      position: 'relative'
+                    }}
+                  >
+                    <div style={{ marginBottom: 6 }}>
+                      <Text strong style={{
+                        fontSize: 14,
+                        color: '#333',
+                        display: 'block',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap'
+                      }}>
+                        {conv.title}
+                      </Text>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        {conv.message_count} messages
+                      </Text>
+                      <Button
+                        type="text"
+                        danger
+                        size="small"
+                        icon={<DeleteOutlined />}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteConversation(conv.conversation_id);
+                        }}
+                        style={{ padding: '2px 8px' }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </Space>
+            )}
+          </Drawer>
+        ) : (
+        showHistory && (
           <Sider
             width={280}
             style={{
@@ -986,6 +1257,7 @@ const ChatBot = () => {
               )}
             </div>
           </Sider>
+        )
         )}
 
         {/* Chat Area */}
@@ -999,7 +1271,7 @@ const ChatBot = () => {
           <div style={{
             flex: 1,
             overflowY: 'auto',
-            padding: '24px',
+            padding: isMobile ? '12px' : '24px',
             display: 'flex',
             flexDirection: 'column'
           }}>
@@ -1010,10 +1282,10 @@ const ChatBot = () => {
                 alignItems: 'center',
                 justifyContent: 'center'
               }}>
-                <Space direction="vertical" align="center" size={24}>
+                <Space direction="vertical" align="center" size={isMobile ? 16 : 24} style={{ padding: isMobile ? '0 16px' : 0 }}>
                   <div style={{
-                    width: 80,
-                    height: 80,
+                    width: isMobile ? 60 : 80,
+                    height: isMobile ? 60 : 80,
                     borderRadius: '50%',
                     background: 'linear-gradient(135deg, #005489 0%, #0077c2 100%)',
                     display: 'flex',
@@ -1021,16 +1293,17 @@ const ChatBot = () => {
                     justifyContent: 'center',
                     boxShadow: '0 4px 16px rgba(0,84,137,0.2)'
                   }}>
-                    <RobotOutlined style={{ fontSize: 40, color: '#fff' }} />
+                    <RobotOutlined style={{ fontSize: isMobile ? 28 : 40, color: '#fff' }} />
                   </div>
                   <Space direction="vertical" align="center" size={8}>
-                    <Title level={3} style={{ margin: 0, color: '#333', fontSize: 28 }}>
+                    <Title level={3} style={{ margin: 0, color: '#333', fontSize: isMobile ? 20 : 28, textAlign: 'center' }}>
                       Meeting Notes AI Assistant
                     </Title>
-                    <Text type="secondary" style={{ fontSize: 18, textAlign: 'center' }}>
+                    <Text type="secondary" style={{ fontSize: isMobile ? 14 : 18, textAlign: 'center' }}>
                       Ask me anything about your meeting notes and factsheets
                     </Text>
                   </Space>
+                  {!isMobile && (
                   <Space direction="vertical" align="start" size={6} style={{ marginTop: 8 }}>
                     <Text type="secondary" style={{ fontSize: 16 }}>
                       Try asking:
@@ -1045,11 +1318,12 @@ const ChatBot = () => {
                       • "What topics were discussed about [fund name]?"
                     </Text>
                   </Space>
-                  <Space direction="vertical" align="start" size={4} style={{ marginTop: 16, padding: '12px 16px', background: '#f5f5f5', borderRadius: 8, maxWidth: 500 }}>
-                    <Text type="secondary" style={{ fontSize: 13, fontStyle: 'italic' }}>
+                  )}
+                  <Space direction="vertical" align="start" size={4} style={{ marginTop: isMobile ? 8 : 16, padding: '12px 16px', background: '#f5f5f5', borderRadius: 8, maxWidth: isMobile ? '100%' : 500 }}>
+                    <Text type="secondary" style={{ fontSize: isMobile ? 12 : 13, fontStyle: 'italic' }}>
                       Tip: Gemini 3 Thinking can be slow. Use filters for faster results.
                     </Text>
-                    <Text type="secondary" style={{ fontSize: 13, fontStyle: 'italic' }}>
+                    <Text type="secondary" style={{ fontSize: isMobile ? 12 : 13, fontStyle: 'italic' }}>
                       Note: AI can make mistakes. Please verify important information.
                     </Text>
                   </Space>
@@ -1063,20 +1337,20 @@ const ChatBot = () => {
                     <div style={{
                       display: 'flex',
                       justifyContent: 'flex-end',
-                      marginBottom: 16
+                      marginBottom: isMobile ? 12 : 16
                     }}>
                       <div style={{
-                        maxWidth: '70%',
+                        maxWidth: isMobile ? '85%' : '70%',
                         background: 'linear-gradient(135deg, #0066a1 0%, #0088cc 100%)',
                         color: '#fff',
-                        padding: '16px 20px',
+                        padding: isMobile ? '12px 14px' : '16px 20px',
                         borderRadius: '20px 20px 6px 20px',
                         boxShadow: '0 4px 12px rgba(0,102,161,0.15), 0 2px 4px rgba(0,0,0,0.05)',
                         transition: 'transform 0.2s, box-shadow 0.2s'
                       }}>
                         <Text style={{
                           color: '#fff',
-                          fontSize: 16,
+                          fontSize: isMobile ? 14 : 16,
                           lineHeight: 1.7,
                           fontWeight: 400
                         }}>
@@ -1091,6 +1365,7 @@ const ChatBot = () => {
                       justifyContent: 'flex-start',
                       alignItems: 'flex-start'
                     }}>
+                      {!isMobile && (
                       <div style={{
                         width: 38,
                         height: 38,
@@ -1106,10 +1381,11 @@ const ChatBot = () => {
                       }}>
                         <RobotOutlined style={{ fontSize: 18, color: '#0066a1' }} />
                       </div>
+                      )}
                       <div style={{
-                        maxWidth: 'calc(80% - 50px)',
+                        maxWidth: isMobile ? '100%' : 'calc(80% - 50px)',
                         background: '#ffffff',
-                        padding: '18px 22px',
+                        padding: isMobile ? '12px 14px' : '18px 22px',
                         borderRadius: '6px 20px 20px 20px',
                         boxShadow: '0 4px 12px rgba(0,0,0,0.06), 0 2px 4px rgba(0,0,0,0.03)',
                         border: '1px solid #e8eaed',
@@ -1304,12 +1580,12 @@ const ChatBot = () => {
           <div style={{
             background: 'linear-gradient(to top, #ffffff 0%, #fafbfc 100%)',
             borderTop: '1px solid #e1e4e8',
-            padding: '24px',
+            padding: isMobile ? '12px' : '24px',
             boxShadow: '0 -4px 16px rgba(0,0,0,0.04)'
           }}>
             <div style={{ maxWidth: 900, margin: '0 auto' }}>
               {/* Web Search Toggle & Model Selector */}
-              <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ marginBottom: isMobile ? 8 : 12, display: 'flex', alignItems: 'center', gap: 8, flexWrap: isMobile ? 'wrap' : 'nowrap' }}>
                 <Button
                   size="small"
                   icon={<GlobalOutlined />}
@@ -1324,8 +1600,8 @@ const ChatBot = () => {
                     border: useWebSearch ? '1px solid #005489' : '1px solid #d1d5db',
                     background: useWebSearch ? '#e6f2f8' : 'transparent',
                     color: useWebSearch ? '#005489' : '#6b7280',
-                    fontSize: 13,
-                    height: 28,
+                    fontSize: isMobile ? 12 : 13,
+                    height: isMobile ? 26 : 28,
                     display: 'flex',
                     alignItems: 'center',
                     gap: 4,
@@ -1333,7 +1609,7 @@ const ChatBot = () => {
                     transition: 'all 0.2s'
                   }}
                 >
-                  Allow Web Search
+                  {isMobile ? 'Web' : 'Allow Web Search'}
                 </Button>
 
                 <Select
@@ -1341,16 +1617,16 @@ const ChatBot = () => {
                   value={model}
                   onChange={(value) => setModel(value as 'gemini-2.5-flash' | 'gemini-2.5-pro' | 'gemini-3-low-thinking' | 'gemini-3-high-thinking')}
                   style={{
-                    width: 200,
+                    width: isMobile ? 140 : 200,
                     borderRadius: 8,
-                    fontSize: 13,
-                    height: 28
+                    fontSize: isMobile ? 12 : 13,
+                    height: isMobile ? 26 : 28
                   }}
                   options={[
-                    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
-                    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
-                    { value: 'gemini-3-low-thinking', label: 'Gemini 3 (Fast)' },
-                    { value: 'gemini-3-high-thinking', label: 'Gemini 3 (Thinking)' }
+                    { value: 'gemini-2.5-flash', label: isMobile ? 'Flash' : 'Gemini 2.5 Flash' },
+                    { value: 'gemini-2.5-pro', label: isMobile ? 'Pro' : 'Gemini 2.5 Pro' },
+                    { value: 'gemini-3-low-thinking', label: isMobile ? 'G3 Fast' : 'Gemini 3 (Fast)' },
+                    { value: 'gemini-3-high-thinking', label: isMobile ? 'G3 Think' : 'Gemini 3 (Thinking)' }
                   ]}
                 />
               </div>
@@ -1358,8 +1634,8 @@ const ChatBot = () => {
               <div style={{
                 background: '#ffffff',
                 border: '2px solid #e1e4e8',
-                borderRadius: 16,
-                padding: '6px',
+                borderRadius: isMobile ? 12 : 16,
+                padding: isMobile ? '4px' : '6px',
                 display: 'flex',
                 alignItems: 'center',
                 transition: 'all 0.3s',
@@ -1368,8 +1644,8 @@ const ChatBot = () => {
                 <TextArea
                   value={question}
                   onChange={(e) => setQuestion(e.target.value)}
-                  placeholder={dataSources.length === 0 ? "Select data sources to start..." : "Ask me anything..."}
-                  autoSize={{ minRows: 1, maxRows: 4 }}
+                  placeholder={dataSources.length === 0 ? "Select data sources..." : "Ask me anything..."}
+                  autoSize={{ minRows: 1, maxRows: isMobile ? 3 : 4 }}
                   onPressEnter={(e) => {
                     if (e.shiftKey) return;
                     e.preventDefault();
@@ -1377,10 +1653,10 @@ const ChatBot = () => {
                   }}
                   style={{
                     resize: 'none',
-                    fontSize: 16,
+                    fontSize: isMobile ? 14 : 16,
                     border: 'none',
                     background: 'transparent',
-                    padding: '14px 18px',
+                    padding: isMobile ? '10px 12px' : '14px 18px',
                     fontWeight: 400,
                     lineHeight: 1.6
                   }}
@@ -1394,21 +1670,21 @@ const ChatBot = () => {
                     style={{
                       background: '#1a1a1a',
                       borderColor: 'transparent',
-                      height: 44,
-                      width: 44,
-                      borderRadius: 22,
+                      height: isMobile ? 38 : 44,
+                      width: isMobile ? 38 : 44,
+                      borderRadius: isMobile ? 19 : 22,
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
                       flexShrink: 0,
-                      marginLeft: 10,
+                      marginLeft: isMobile ? 6 : 10,
                       boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
                       transition: 'all 0.2s'
                     }}
                   >
                     <div style={{
-                      width: 14,
-                      height: 14,
+                      width: isMobile ? 12 : 14,
+                      height: isMobile ? 12 : 14,
                       backgroundColor: '#ffffff',
                       borderRadius: 2
                     }} />
@@ -1421,14 +1697,14 @@ const ChatBot = () => {
                     style={{
                       background: (question.trim() && dataSources.length > 0) ? 'linear-gradient(135deg, #0066a1 0%, #0088cc 100%)' : '#d1d5db',
                       borderColor: 'transparent',
-                      height: 44,
-                      width: 44,
-                      borderRadius: 12,
+                      height: isMobile ? 38 : 44,
+                      width: isMobile ? 38 : 44,
+                      borderRadius: isMobile ? 10 : 12,
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
                       flexShrink: 0,
-                      marginLeft: 10,
+                      marginLeft: isMobile ? 6 : 10,
                       boxShadow: (question.trim() && dataSources.length > 0) ? '0 4px 12px rgba(0,102,161,0.25)' : 'none',
                       transition: 'all 0.2s',
                       transform: (question.trim() && dataSources.length > 0) ? 'scale(1)' : 'scale(0.95)'
@@ -1439,14 +1715,14 @@ const ChatBot = () => {
               </div>
               {dataSources.length === 0 && (
                 <Text type="secondary" style={{
-                  fontSize: 14,
-                  marginTop: 12,
+                  fontSize: isMobile ? 12 : 14,
+                  marginTop: isMobile ? 8 : 12,
                   display: 'block',
                   textAlign: 'center',
                   color: '#9ca3af',
                   fontWeight: 500
                 }}>
-                  Select at least one data source from the sidebar to begin
+                  {isMobile ? 'Tap menu to select data sources' : 'Select at least one data source from the sidebar to begin'}
                 </Text>
               )}
             </div>
