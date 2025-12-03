@@ -1660,7 +1660,7 @@ def ask_gemini_with_rag(
 
                     context += f"Date: {meeting_date}\n"
                     context += f"Fund: {chunk.get('fund_name', 'Unknown')}\n"
-                    context += f"Manager: {chunk.get('manager', 'Unknown')}\n"
+                    # Note: Manager name excluded - personnel may have changed since meeting date
                     context += f"Chunk Type: {chunk.get('chunk_type', 'Unknown')}\n"
                     context += f"Content: {chunk.get('text', '')}\n"
                     context += f"Relevance Score: {chunk.get('score', 0):.4f}\n"
@@ -1863,7 +1863,7 @@ def ask_gemini_with_rag_streaming(
 
                     context += f"Date: {meeting_date}\n"
                     context += f"Fund: {chunk.get('fund_name', 'Unknown')}\n"
-                    context += f"Manager: {chunk.get('manager', 'Unknown')}\n"
+                    # Note: Manager name excluded - personnel may have changed since meeting date
                     context += f"Chunk Type: {chunk.get('chunk_type', 'Unknown')}\n"
                     context += f"Content: {chunk.get('text', '')}\n"
                     context += f"Relevance Score: {chunk.get('score', 0):.4f}\n"
@@ -1938,7 +1938,7 @@ def ask_gemini_with_rag_streaming(
      * Factsheets are labeled as "Factsheet - [filename] ([date])" - use this EXACT format in citations
      * FORMATTING: Use italic markdown format for citations: *Source: Factsheet - AKO Global Fund.pdf (Oct 31, 2025)*
      * Example: If data is from "Factsheet - AKO Global Fund.pdf (Oct 31, 2025)", cite it as *Source: Factsheet - AKO Global Fund.pdf (Oct 31, 2025)*
-     * Meeting notes include dates, fund names, and managers - include ALL these details in citations using the same italic format
+     * Meeting notes include dates and fund names - include these details in citations using the same italic format. Do NOT cite manager names as personnel may have changed
      * Use inline citations throughout your analysis, not just at the end
      * Make citations specific and detailed so users know exactly where information came from
    - **STRUCTURE YOUR RESPONSE IN TWO CLEAR SECTIONS**:
@@ -1982,7 +1982,7 @@ Instructions:
 {web_search_instructions}
 5. Synthesize all information (internal + web if enabled) into one comprehensive answer
 6. Provide thorough explanations with context, background, and analysis
-7. Cite all sources with specifics (meeting dates, URLs, fund names, manager names)
+7. Cite all sources with specifics (meeting dates, URLs, fund names). Do NOT mention manager names from meeting notes as personnel may have changed since the meeting date
 8. Use clear section headers to distinguish internal data from web search results
 9. Give detailed, comprehensive responses - do not be brief
 10. **CITATION STYLE - IMPORTANT**: When citing factsheets, ALWAYS use the fund name and date (e.g., "Infinitum Master Fund Factsheet (Sep 01, 2025)"). NEVER use generic numbered references like "Factsheet 1" or "(Source: Factsheet 16)" - these are meaningless to users
