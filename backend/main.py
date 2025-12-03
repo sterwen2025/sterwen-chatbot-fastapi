@@ -1772,8 +1772,8 @@ def ask_gemini_with_rag_streaming(
         print(f"[MODEL] Using {actual_model} with low thinking")
     elif model == "gemini-3-high-thinking":
         actual_model = "gemini-3-pro-preview"
-        thinking_config = None
-        print(f"[MODEL] Using {actual_model} with default (high) thinking")
+        thinking_config = types.ThinkingConfig(include_thoughts=True)
+        print(f"[MODEL] Using {actual_model} with high thinking (include_thoughts=True)")
     else:
         print(f"[MODEL] Using {actual_model}")
 

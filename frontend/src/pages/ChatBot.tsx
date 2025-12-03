@@ -1047,7 +1047,7 @@ const ChatBot = () => {
                   </Space>
                   <Space direction="vertical" align="start" size={4} style={{ marginTop: 16, padding: '12px 16px', background: '#f5f5f5', borderRadius: 8, maxWidth: 500 }}>
                     <Text type="secondary" style={{ fontSize: 13, fontStyle: 'italic' }}>
-                      Tip: Gemini 3 Thorough can be slow. Use filters for faster results.
+                      Tip: Gemini 3 Thinking can be slow. Use filters for faster results.
                     </Text>
                     <Text type="secondary" style={{ fontSize: 13, fontStyle: 'italic' }}>
                       Note: AI can make mistakes. Please verify important information.
@@ -1350,7 +1350,7 @@ const ChatBot = () => {
                     { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
                     { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
                     { value: 'gemini-3-low-thinking', label: 'Gemini 3 (Fast)' },
-                    { value: 'gemini-3-high-thinking', label: 'Gemini 3 (Thorough)' }
+                    { value: 'gemini-3-high-thinking', label: 'Gemini 3 (Thinking)' }
                   ]}
                 />
               </div>
